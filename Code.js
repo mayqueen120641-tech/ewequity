@@ -168,7 +168,8 @@ function fetchRatesParallel_() {
 // jobs와 같은 길이의 배열을 돌려주며, 못 받은 자리는 null이다.
 function fetchJobsSafe_(jobs) {
   const toParams = function (j) {
-    return Object.assign({ muteHttpExceptions: true }, j.headers ? { headers: j.headers } : {});
+    // j.options로 POST/payload 같은 걸 그대로 넘길 수 있다(KIND가 POST만 받는다).
+    return Object.assign({ muteHttpExceptions: true }, j.options || {}, j.headers ? { headers: j.headers } : {});
   };
   if (!jobs.length) return [];
 
@@ -549,27 +550,33 @@ function getCalendar(noCache) {
 
   const jobs = [];
   if (fredKey) {
-    jobs.push({ name: 'macro', url: fredReleaseDatesUrl_(fredKey, from, to, 0) });
+    jobs.push({
+      name: 'macro',
+      url: fredReleaseDatesUrl_(fredKey, from, to, 0),
+      parse: function (text) {
+        return parseFredReleases_(collectFredPages_(fredKey, from, to, JSON.parse(text)));
+      }
+    });
   }
   if (finnhubKey) {
     jobs.push({
       name: 'earnings',
-      url: 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to + '&token=' + finnhubKey
+      url: 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to + '&token=' + finnhubKey,
+      parse: function (text) { return parseMajorEarnings_(JSON.parse(text)); }
     });
   }
+  // 국내(코스피) 실적은 키가 필요 없다 — KIND는 공개 화면이라 그대로 조회한다.
+  jobs.push(kindEarningsJob_(from, to));
 
   const responses = fetchJobsSafe_(jobs);
-  const data = { macro: [], earnings: [], from: from, to: to };
+  const data = { macro: [], earnings: [], krEarnings: [], from: from, to: to };
   jobs.forEach(function (j, i) {
     try {
       const res = responses[i];
       if (!res) throw new Error('연결 오류');
       const code = res.getResponseCode();
       if (code >= 400) throw new Error('HTTP ' + code);
-      const json = JSON.parse(res.getContentText());
-      data[j.name] = j.name === 'macro'
-        ? parseFredReleases_(collectFredPages_(fredKey, from, to, json))
-        : parseMajorEarnings_(json);
+      data[j.name] = j.parse(res.getContentText());
     } catch (err) {
       data[j.name + 'Error'] = String(err);
     }
@@ -640,6 +647,81 @@ function majorReleaseLabel_(releaseName) {
   return null;
 }
 
+// ---- 국내(코스피) 실적 발표: 한국거래소 KIND의 IR 일정 ----
+// KIND는 JSON API가 아니라 HTML 표를 그리는 화면이라 POST로 조회해서 표를 파싱한다.
+// 브라우저가 하는 요청을 그대로 흉내내야 하므로 Referer와 form 파라미터가 필요하다.
+// (method/forward 값은 화면 JS가 폼에 채워 넣는 값 그대로다.)
+var KIND_IR_URL_ = 'https://kind.krx.co.kr/corpgeneral/irschedule.do';
+var KIND_MARKET_KOSPI_ = '1'; // 1=유가증권시장(코스피), 2=코스닥
+
+// IR 일정에는 실적 발표 말고도 NDR·기업설명회·부스 운영 같은 게 섞여 있어서
+// 실적 관련만 골라낸다.
+var KIND_EARNINGS_RE_ = /실적|결산|Earnings|Financial Results/i;
+
+function kindEarningsJob_(from, to) {
+  return {
+    name: 'krEarnings',
+    url: KIND_IR_URL_,
+    parse: parseKindEarnings_,
+    options: {
+      method: 'post',
+      contentType: 'application/x-www-form-urlencoded; charset=UTF-8',
+      headers: {
+        'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'],
+        'Referer': KIND_IR_URL_ + '?method=searchIRScheduleMain&gubun=iRSchedule'
+      },
+      payload: {
+        method: 'searchIRScheduleSub',
+        forward: 'searchirschedule_sub',
+        currentPageSize: '3000',
+        pageIndex: '1',
+        fromDate: from,
+        toDate: to,
+        marketType: KIND_MARKET_KOSPI_
+      }
+    }
+  };
+}
+
+function parseKindEarnings_(html) {
+  const out = [];
+  const seen = {};
+  // 표의 각 행은 [번호, 회사명, 내용, 장소, 날짜, 시간] 6칸으로 고정돼 있다.
+  const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+  let tr;
+  while ((tr = trRe.exec(html)) !== null) {
+    const cells = [];
+    const tdRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/g;
+    let td;
+    while ((td = tdRe.exec(tr[1])) !== null) {
+      cells.push(stripTags_(td[1]).replace(/\s+/g, ' ').trim());
+    }
+    if (cells.length !== 6) continue;
+
+    const corp = cells[1], desc = cells[2], date = cells[4], time = cells[5];
+    if (!corp || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    if (!KIND_EARNINGS_RE_.test(desc)) continue;
+
+    // 같은 행사를 국문/영문 두 건으로 올리는 회사가 많다. 회사+날짜로 묶고,
+    // 화면에 한글 설명이 뜨도록 한글이 들어간 쪽을 남긴다.
+    const key = corp + '|' + date;
+    const isKorean = /[가-힣]/.test(desc);
+    if (seen[key]) {
+      if (isKorean && !seen[key].korean) {
+        seen[key].item.desc = desc;
+        seen[key].korean = true;
+      }
+      continue;
+    }
+    const item = { date: date, corp: corp, desc: desc, time: /^\d{2}:\d{2}$/.test(time) ? time : '' };
+    seen[key] = { item: item, korean: isKorean };
+    out.push(item);
+  }
+  return out
+    .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
+    .slice(0, 250);
+}
+
 function parseMajorEarnings_(json) {
   const raw = json.earningsCalendar || [];
   const wanted = {};
@@ -695,7 +777,16 @@ function getNews(category, noCache) {
 }
 
 function stripTags_(s) {
-  return String(s).replace(/<[^>]*>/g, '').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  return String(s)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&#(\d+);/g, function (_, code) { return String.fromCharCode(parseInt(code, 10)); })
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    // &amp;는 반드시 마지막에 — 먼저 풀면 "&amp;quot;" 같은 이중 인코딩이 깨진다.
+    .replace(/&amp;/g, '&');
 }
 
 /**

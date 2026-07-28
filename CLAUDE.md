@@ -60,6 +60,13 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
   캔버스 관련 CSS 건드릴 때 주의.
 - **한국 종목 검색**: Yahoo Finance 검색이 일부 한국 종목(예: 삼성전자)에서 실패할 수 있음.
   `KOREAN_TICKER_MAP_` 로컬 매핑표로 보강 + query1→query2 도메인 이중화 적용됨.
+- **국내 실적은 KIND(한국거래소) IR 일정**: `kind.krx.co.kr/corpgeneral/irschedule.do`에
+  **POST**로 조회한다(JSON API가 아니라 HTML 표를 파싱). `method=searchIRScheduleSub` +
+  `forward=searchirschedule_sub` + `Referer` 헤더가 있어야 응답이 온다 — 하나라도 빠지면
+  0바이트가 돌아온다. `marketType=1`이 코스피. GAS에서 접근 가능한 것 확인됨(ECOS와 달리
+  막히지 않는다). 표는 항상 6칸 `[번호, 회사명, 내용, 장소, 날짜, 시간]`.
+  같은 행사를 국문/영문 두 건으로 올리는 회사가 많아 `회사명|날짜`로 중복 제거하되
+  한글 설명 쪽을 남긴다. IR 일정에는 NDR·부스 운영도 섞여 있어 실적 키워드로 걸러낸다.
 - **캘린더 = FRED 매크로 + Finnhub 실적**: Finnhub는 미국 상장사 전체(하루 수백 건)를 주므로
   `MAJOR_EARNINGS_SYMBOLS_` 대형주로 좁혀서 쓴다. 예전엔 그냥 `slice(0, 60)`이라 알파벳
   앞쪽 소형주만 잡혀 "전부 같은 날짜"로 보였던 것 — Finnhub 데이터 자체 문제가 아니었다.
@@ -82,8 +89,9 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
    ECOS는 트리거 백그라운드 갱신으로 분리. 트리거 설치까지 완료돼 운영 중.
    실측 **3~5초**로 안정, 지표 8종 전부 ECOS/실데이터, 50초 튐 없음.
 2. ~~**경제 캘린더 실데이터 교체**~~ (2026-07-28 완료) — FRED `releases/dates`의 매크로
-   지표 발표일(CPI·고용·GDP·PCE 등) + Finnhub 실적 중 대형주만. 화면은 월 단위 달력
-   그리드로, 날짜를 누르면 그 날 일정이 아래에 뜬다. 조회 범위는 이번 달~다음 달.
+   지표 발표일(CPI·고용·GDP·PCE 등) + KIND 국내 코스피 실적 + Finnhub 해외 대형주 실적.
+   화면은 월 단위 달력 그리드로, 날짜를 누르면 그 날 일정이 아래에 뜬다.
+   조회 범위는 이번 달~다음 달. 점 색: 주황=지표, 초록=국내 실적, 파랑=해외 실적.
 3. **뉴스 "중요도순" 정렬** — AI 자동 브리핑 기능과 함께 로드맵 단계에서 처리 예정.
 
 ## 로드맵 (참고용, 아직 미착수)

@@ -15,6 +15,7 @@
     --down:#3aa0ff;
     --accent:#ff7a45;
     --accent2:#3aa0ff;
+    --accent3:#4ec9a0;
   }
   *{box-sizing:border-box;}
   body{
@@ -136,11 +137,13 @@
   .cal-dots{display:flex;gap:3px;height:5px;align-items:center;}
   .cal-dot{display:inline-block;flex:0 0 auto;width:5px;height:5px;border-radius:50%;}
   .cal-dot.macro{background:var(--accent);}
+  .cal-dot.kr{background:var(--accent3);}
   .cal-dot.earn{background:var(--accent2);}
 
   .cal-detail{margin-top:14px;border-top:1px solid var(--panel-border);padding-top:12px;}
   .cal-detail-date{font-size:13px;font-weight:600;margin-bottom:8px;}
-  .cal-detail ul{list-style:none;margin:0;padding:0;font-size:13px;}
+  /* 실적 시즌엔 하루 20건 넘게 몰리는 날이 있어서 상세 목록은 스크롤로 묶는다. */
+  .cal-detail ul{list-style:none;margin:0;padding:0;font-size:13px;max-height:260px;overflow-y:auto;}
   .cal-detail li{display:flex;align-items:baseline;gap:8px;padding:6px 0;}
   .cal-detail li + li{border-top:1px solid var(--panel-border);}
   .cal-tag{
@@ -148,6 +151,7 @@
     border:1px solid currentColor;line-height:1.4;
   }
   .cal-tag.macro{color:var(--accent);}
+  .cal-tag.kr{color:var(--accent3);}
   .cal-tag.earn{color:var(--accent2);}
   /* 실적 발표 시각: bmo(장 시작 전) / amc(장 마감 후) */
   .cal-hour{color:var(--sub);font-size:11px;}
@@ -288,7 +292,8 @@
       <div class="cal-grid" id="calGrid"></div>
       <div class="cal-legend">
         <span><i class="cal-dot macro"></i>지표 발표</span>
-        <span><i class="cal-dot earn"></i>기업 실적</span>
+        <span><i class="cal-dot kr"></i>국내 실적</span>
+        <span><i class="cal-dot earn"></i>해외 실적</span>
       </div>
       <div class="cal-detail" id="calDetail"></div>
     </div>
@@ -369,6 +374,11 @@ function mockCalendar() {
       { date: plus(2), name: '미국 개인소득·지출(PCE)' },
       { date: plus(7), name: '미국 구인·이직 보고서(JOLTS)' },
       { date: plus(10), name: '미국 고용보고서' }
+    ],
+    krEarnings: [
+      { date: plus(0), corp: 'SK하이닉스', time: '09:00', desc: '2026년 2분기 경영실적 발표' },
+      { date: plus(1), corp: '삼성전자', time: '10:00', desc: '2026년 2분기 경영실적 발표' },
+      { date: plus(6), corp: 'NAVER', time: '14:00', desc: '2026년 2분기 경영실적 발표' }
     ],
     earnings: [
       { date: plus(8), symbol: 'DIS', hour: 'amc' },
@@ -632,16 +642,27 @@ function renderCalendar(cal) {
   (cal.macro || []).forEach(function (m) {
     push(m.date, { type: 'macro', label: m.name || '' });
   });
+  (cal.krEarnings || []).forEach(function (e) {
+    push(e.date, { type: 'kr', label: e.corp || '', time: e.time || '', note: e.desc || '' });
+  });
   (cal.earnings || []).forEach(function (e) {
     push(e.date, { type: 'earn', label: e.symbol || '', hour: e.hour || '' });
   });
-  // 같은 날 안에서는 지표를 먼저, 그 다음 실적을 보여준다.
+  // 같은 날 안에서는 지표 → 국내 실적 → 해외 실적 순. 국내끼리는 발표 시각순.
+  const order = { macro: 0, kr: 1, earn: 2 };
   Object.keys(events).forEach(function (k) {
-    events[k].sort(function (a, b) { return a.type === b.type ? 0 : a.type === 'macro' ? -1 : 1; });
+    events[k].sort(function (a, b) {
+      if (order[a.type] !== order[b.type]) return order[a.type] - order[b.type];
+      // 시각을 안 올린 회사도 있는데, 빈 값을 그대로 비교하면 09:00보다 앞서서
+      // 목록 맨 위를 차지한다. 시각 미정은 뒤로 보낸다.
+      const ta = a.time || '99:99';
+      const tb = b.time || '99:99';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
   });
 
   calState.events = events;
-  calState.failed = !!(cal.macroError && cal.earningsError);
+  calState.failed = !!(cal.macroError && cal.earningsError && cal.krEarningsError);
 
   const today = new Date();
   calState.minMonth = monthOf_(cal.from ? parseYmd_(cal.from) : today);
@@ -681,9 +702,11 @@ function renderCalendarMonth() {
     if (key === calState.selected) cls.push('selected');
     if (key < todayStr) cls.push('muted'); // 지난 날은 흐리게
 
+    // 같은 종류가 몇 건이든 점은 종류당 하나만 — 칸이 작아서 개수만큼 찍으면 뭉갠다.
     let dots = '';
-    if (evs.some(function (e) { return e.type === 'macro'; })) dots += '<i class="cal-dot macro"></i>';
-    if (evs.some(function (e) { return e.type === 'earn'; })) dots += '<i class="cal-dot earn"></i>';
+    ['macro', 'kr', 'earn'].forEach(function (t) {
+      if (evs.some(function (e) { return e.type === t; })) dots += '<i class="cal-dot ' + t + '"></i>';
+    });
 
     html += '<button type="button" class="' + cls.join(' ') + '" data-date="' + key + '">' +
       '<span>' + d + '</span><span class="cal-dots">' + dots + '</span></button>';
@@ -708,13 +731,19 @@ function renderCalendarDetail() {
       (calState.failed ? '일정을 불러오지 못했어요.' : '이 날은 예정된 일정이 없어요.') +
       '</div>';
   } else {
+    const TAGS = { macro: ['macro', '지표'], kr: ['kr', '국내'], earn: ['earn', '해외'] };
     body = '<ul>' + evs.map(function (e) {
-      const tag = e.type === 'macro'
-        ? '<span class="cal-tag macro">지표</span>'
-        : '<span class="cal-tag earn">실적</span>';
-      const hour = e.hour === 'bmo' ? '<span class="cal-hour">장전</span>'
-        : e.hour === 'amc' ? '<span class="cal-hour">장후</span>' : '';
-      return '<li>' + tag + '<span>' + esc_(e.label) + '</span>' + hour + '</li>';
+      const t = TAGS[e.type] || TAGS.macro;
+      const tag = '<span class="cal-tag ' + t[0] + '">' + t[1] + '</span>';
+      // 국내는 발표 시각이 그대로 오고(09:00), 해외는 장전/장후 구분만 온다.
+      const when = e.type === 'kr'
+        ? (e.time ? '<span class="cal-hour">' + esc_(e.time) + '</span>' : '')
+        : e.hour === 'bmo' ? '<span class="cal-hour">장전</span>'
+          : e.hour === 'amc' ? '<span class="cal-hour">장후</span>' : '';
+      // 국내 항목의 desc는 "2026년 2분기 경영실적 발표" 식 정형문이라 목록에 다 깔면
+      // 지저분해진다. 회사명만 보여주고 원문은 툴팁으로 넘긴다.
+      const title = e.note ? ' title="' + esc_(e.note) + '"' : '';
+      return '<li' + title + '>' + tag + '<span>' + esc_(e.label) + '</span>' + when + '</li>';
     }).join('') + '</ul>';
   }
 
