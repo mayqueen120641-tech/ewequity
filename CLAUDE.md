@@ -42,7 +42,7 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
   값을 스크립트 속성 `ECOS_CACHE_V1`에 저장하고, `fetchRatesParallel_`은 `readEcosCache_()`로
   그 저장값만 읽는다. 값이 없거나 26시간(`ECOS_MAX_AGE_MS_`) 넘게 낡았으면 기준금리는
   `BASE_RATE_KR_MANUAL`, 환율은 Yahoo(`KRW=X`)로 폴백. 트리거 설치는 Apps Script 편집기에서
-  `setupEcosTrigger()`를 한 번 실행(중복 실행해도 안전).
+  **`setupTriggers()`**를 한 번 실행(중복 실행해도 안전). ECOS와 AI 브리핑 트리거를 함께 등록한다.
   `BASE_RATE_KR_MANUAL`은 손으로 관리하지 말 것 — ECOS 갱신에 성공할 때마다
   `refreshEcosCache()`가 최신값으로 자동으로 덮어쓴다(방치돼 낡는 사고를 막기 위함).
 - **`UrlFetchApp.fetchAll()`의 함정**: `muteHttpExceptions`는 HTTP 4xx/5xx만 막아준다.
@@ -75,6 +75,23 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
   FRED는 특정 통계가 아니라 **모든** 발표 일정을 주므로 두 달치가 한 페이지(1000건)를
   넘는다(실측 1638건). `collectFredPages_`로 남은 페이지를 병렬로 이어붙이지 않으면
   뒷달이 통째로 사라진다. `parseFredReleases_`는 응답 객체가 아니라 **행 배열**을 받는다.
+- **AI 브리핑 (Claude API)**: `refreshAiBriefing()`이 30분 주기 트리거로 돌면서 그날 뉴스 전체를
+  Claude에 넘겨 요약 + 뉴스별 중요도(1~5)를 받아 스크립트 속성 `AI_BRIEFING_V1`에 저장하고,
+  `doGet(action=briefing)`은 그 저장값만 읽는다(ECOS와 같은 이유 — 대시보드가 Claude 응답을
+  기다리면 안 되므로 **요청 경로에서 호출하지 말 것**). `ANTHROPIC_API_KEY`가 없으면 조용히
+  건너뛰고, 프론트는 브리핑 카드와 정렬 토글을 숨긴 채 최신순으로 동작한다.
+  - 모델은 `claude-opus-4-8`, 적응형 사고(`thinking: {type:'adaptive'}`) + `effort: 'low'`.
+    GAS는 스트리밍이 안 되고 트리거 안에서 도는 호출이라 응답 시간을 짧게 유지해야 한다.
+  - 응답은 **구조화된 출력**(`output_config.format`)으로 스키마를 강제한다. 스키마 제약:
+    모든 object에 `additionalProperties:false`+`required` 필수, `minimum/maximum` 미지원이라
+    점수 범위는 `enum: [1,2,3,4,5]`로 쓴다.
+  - 적응형 사고를 켜면 **thinking 블록이 먼저** 오므로 `content[0]`을 쓰면 안 된다 —
+    `type==='text'`인 블록을 찾아서 파싱할 것. `stop_reason`이 `refusal`/`max_tokens`면 저장하지 않는다.
+  - 중요도는 **링크를 키로** 저장한다(카테고리 필터를 걸면 배열 인덱스가 흔들리므로).
+    스크립트 속성은 값 하나당 9KB 제한이라 `reason`은 저장하지 않는다(스키마에는 남겨둠 —
+    이유를 쓰게 하면 점수가 더 정확해진다).
+- **뉴스 중복**: 같은 기사가 여러 카테고리에 동시에 잡힌다(국내정세 + 국제정세 등). 백엔드
+  `collectAllNews_`와 프론트 `loadNews` **양쪽 모두** 링크로 중복을 걸러야 한다.
 - **달력 칸에 `aspect-ratio` 금지**: 정사각형으로 두면 패널이 전체 너비가 되는 좁은 화면에서
   칸이 94px까지 커져 달력이 화면을 다 잡아먹는다. `min-height`로 높이를 묶어둘 것.
 - **미리보기 창의 file:// 제약**: 프로젝트 폴더 밖 파일은 정적 스냅샷으로 렌더링돼 일부
@@ -92,7 +109,9 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
    지표 발표일(CPI·고용·GDP·PCE 등) + KIND 국내 코스피 실적 + Finnhub 해외 대형주 실적.
    화면은 월 단위 달력 그리드로, 날짜를 누르면 그 날 일정이 아래에 뜬다.
    조회 범위는 이번 달~다음 달. 점 색: 주황=지표, 초록=국내 실적, 파랑=해외 실적.
-3. **뉴스 "중요도순" 정렬** — AI 자동 브리핑 기능과 함께 로드맵 단계에서 처리 예정.
+3. ~~**뉴스 "중요도순" 정렬** + **AI 자동 브리핑**~~ (2026-07-29 완료) — 네이버 API엔 중요도
+   개념이 없어서, Claude가 그날 헤드라인 전체를 보고 **요약과 중요도 점수를 한 번의 호출로**
+   같이 만들어준다. 아래 "AI 브리핑" 항목 참고.
 
 ## 로드맵 (참고용, 아직 미착수)
 

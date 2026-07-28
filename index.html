@@ -160,6 +160,38 @@
   .cal-legend{display:flex;gap:14px;margin-top:10px;font-size:11px;color:var(--sub);}
   .cal-legend span{display:flex;align-items:center;gap:5px;}
 
+  /* ---------- AI 브리핑 ---------- */
+  .briefing{border-left:3px solid var(--accent);}
+  .briefing-head{display:flex;align-items:center;gap:8px;}
+  .briefing-head h2{margin:0;}
+  .briefing-badge{
+    font-size:10px;letter-spacing:.06em;padding:2px 6px;border-radius:5px;
+    color:var(--accent);border:1px solid var(--accent);line-height:1.4;
+  }
+  .briefing-stale{display:none;font-size:11px;color:var(--sub);}
+  .briefing.is-stale .briefing-stale{display:inline;}
+  .briefing-text{margin:10px 0 0;font-size:14px;line-height:1.75;color:var(--text);}
+
+  /* h2의 아래 여백(.panel h2)을 없앤 만큼 컨테이너가 대신 띄운다. */
+  .news-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+  .news-head h2{margin:0;}
+  .news-sort{display:flex;gap:6px;}
+  .news-sort button{
+    background:#0d1729;border:1px solid var(--panel-border);color:var(--sub);
+    font-size:11px;padding:5px 10px;border-radius:7px;cursor:pointer;font-family:inherit;
+    transition:background .12s ease,color .12s ease;
+  }
+  .news-sort button:hover{background:#13213b;color:var(--text);}
+  .news-sort button.active{background:var(--accent);color:#1a0e05;border-color:var(--accent);font-weight:600;}
+
+  /* 중요도 배지 — 5·4점만 표시한다. 전 항목에 배지를 달면 변별력이 사라진다. */
+  .news-rank{
+    font-size:10px;padding:1px 5px;border-radius:4px;margin-right:6px;
+    border:1px solid currentColor;line-height:1.5;white-space:nowrap;
+  }
+  .news-rank.top{color:var(--up);}
+  .news-rank.high{color:var(--accent);}
+
   .news-tags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
   .news-tags button{
     background:#1c2942;border:1px solid var(--panel-border);color:var(--sub);
@@ -250,6 +282,16 @@
     (배포 방법은 배포_가이드.md 참고)
   </div>
 
+  <!-- AI 브리핑. 저장된 브리핑이 없으면(키 미설정/트리거 미실행) 통째로 숨긴다. -->
+  <section class="panel briefing" id="briefingPanel" style="display:none;">
+    <div class="briefing-head">
+      <h2>오늘의 브리핑</h2>
+      <span class="briefing-badge">AI</span>
+      <span class="briefing-stale" id="briefingStale">오래된 브리핑</span>
+    </div>
+    <p class="briefing-text" id="briefingText"></p>
+  </section>
+
   <section class="cards" id="cards">
     <div class="card"><div class="label">기준금리 (한/미)</div><div class="value">불러오는 중…</div></div>
     <div class="card"><div class="label">USD-KRW 환율</div><div class="value">불러오는 중…</div></div>
@@ -300,7 +342,14 @@
   </section>
 
   <section class="panel">
-    <h2>오늘의 경제 뉴스</h2>
+    <div class="news-head">
+      <h2>오늘의 경제 뉴스</h2>
+      <!-- 중요도 점수는 AI 브리핑이 같이 만들어준다. 점수가 없으면 이 토글은 숨긴다. -->
+      <div class="news-sort" id="newsSort" style="display:none;">
+        <button data-sort="importance" class="active">중요도순</button>
+        <button data-sort="recent">최신순</button>
+      </div>
+    </div>
     <div class="news-tags" id="newsTags">
       <button data-cat="all" class="active">전체</button>
       <button data-cat="world">세계경제</button>
@@ -316,7 +365,7 @@
 </div>
 
 <script>
-const state = { range: '3M', category: 'all', chart: null, usingMock: false };
+const state = { range: '3M', category: 'all', newsSort: 'importance', chart: null, usingMock: false };
 
 function isConfigured() {
   return typeof GAS_URL === 'string' && GAS_URL.indexOf('http') === 0;
@@ -387,11 +436,25 @@ function mockCalendar() {
     ]
   };
 }
+function mockBriefing() {
+  const n = mockNews().items;
+  return {
+    summary: '기준금리는 한국 2.5%, 미국 3.63%로 동결 흐름이 이어지고 있습니다. 원/달러 환율은 1,465원 부근에서 소폭 하락했고, 코스피는 장중 급락 후 상승 전환하며 변동성이 컸습니다. 국제유가는 배럴당 84달러대로 올라 물가 압력이 다시 부각되는 모습입니다.',
+    // 실제로는 백엔드가 링크별 1~5 점수를 내려준다. 목업에서도 같은 모양으로 만들어야
+    // 정렬 토글이 화면 확인용으로 동작한다.
+    importance: n.reduce(function (acc, item, i) {
+      acc[item.link] = [5, 3, 4][i % 3];
+      return acc;
+    }, {}),
+    at: new Date().toISOString()
+  };
+}
 function mockNews() {
   const all = [
-    { title: '코스피, 장중 3% 급락했다가 상승 전환… 개인·기관 순매도 축소', link: '#', pubDate: '1시간 전', category: 'domestic' },
-    { title: '원/달러 환율 1,522.5원 개장, 전일 대비 5.7원 하락', link: '#', pubDate: '1시간 전', category: 'world' },
-    { title: 'SK하이닉스 ADR 매수세 유입에 반도체 업종 강세', link: '#', pubDate: '2시간 전', category: 'domestic' }
+    // link는 중요도 점수를 붙이는 키로도 쓰이므로 목업에서도 서로 달라야 한다.
+    { title: '코스피, 장중 3% 급락했다가 상승 전환… 개인·기관 순매도 축소', link: '#mock-1', pubDate: '1시간 전', category: 'domestic' },
+    { title: '원/달러 환율 1,522.5원 개장, 전일 대비 5.7원 하락', link: '#mock-2', pubDate: '1시간 전', category: 'world' },
+    { title: 'SK하이닉스 ADR 매수세 유입에 반도체 업종 강세', link: '#mock-3', pubDate: '2시간 전', category: 'domestic' }
   ];
   return { items: all };
 }
@@ -781,20 +844,52 @@ function shiftCalendarMonth(delta) {
 document.getElementById('calPrev').addEventListener('click', function () { shiftCalendarMonth(-1); });
 document.getElementById('calNext').addEventListener('click', function () { shiftCalendarMonth(1); });
 
+// ---------- AI 브리핑 ----------
+// { summary, importance: { <뉴스 링크>: 1~5 }, at, stale } — 백엔드가 트리거로 미리 만들어둔 값.
+let briefingCache = { summary: null, importance: {} };
+
+function renderBriefing(b) {
+  const panel = document.getElementById('briefingPanel');
+  if (!b || !b.summary) { panel.style.display = 'none'; return; }
+  document.getElementById('briefingText').textContent = b.summary;
+  panel.classList.toggle('is-stale', !!b.stale);
+  panel.style.display = '';
+}
+
 function renderNews(newsItems) {
   const el = document.getElementById('newsList');
-  const filtered = state.category === 'all'
+  const scores = briefingCache.importance || {};
+  const hasScores = Object.keys(scores).length > 0;
+
+  // 점수가 하나도 없으면(브리핑 미설정) 정렬 토글 자체를 숨기고 최신순으로만 보여준다.
+  document.getElementById('newsSort').style.display = hasScores ? '' : 'none';
+
+  const filtered = (state.category === 'all'
     ? newsItems
-    : newsItems.filter(function (n) { return n.category === state.category; });
+    : newsItems.filter(function (n) { return n.category === state.category; })
+  ).slice();
+
+  if (hasScores && state.newsSort === 'importance') {
+    // 점수가 같으면 최신순으로 갈라준다. 점수를 못 받은 항목은 0으로 취급해 뒤로 밀린다.
+    filtered.sort(function (a, b) {
+      const d = (scores[b.link] || 0) - (scores[a.link] || 0);
+      return d !== 0 ? d : new Date(b.pubDate) - new Date(a.pubDate);
+    });
+  } else {
+    filtered.sort(function (a, b) { return new Date(b.pubDate) - new Date(a.pubDate); });
+  }
 
   if (!filtered.length) {
     el.innerHTML = '<div class="empty">표시할 뉴스가 없습니다.</div>';
     return;
   }
   el.innerHTML = filtered.map(function (n) {
+    const score = scores[n.link] || 0;
+    const badge = score >= 5 ? '<span class="news-rank top">중요</span>'
+      : score === 4 ? '<span class="news-rank high">주목</span>' : '';
     return '<div class="news-item">' +
-      '<a href="' + n.link + '" target="_blank" rel="noopener">' + n.title + '</a>' +
-      '<div class="meta">' + (n.pubDate || '') + '</div>' +
+      '<a href="' + esc_(n.link) + '" target="_blank" rel="noopener">' + badge + esc_(n.title) + '</a>' +
+      '<div class="meta">' + esc_(n.pubDate || '') + '</div>' +
       '</div>';
   }).join('');
 }
@@ -835,6 +930,18 @@ async function loadCalendar(force) {
   }
 }
 
+// 브리핑은 백엔드가 트리거로 미리 만들어둔 값을 읽기만 하므로 즉시 돌아온다.
+// 실패해도 뉴스는 최신순으로 그대로 보여야 하니 조용히 넘어간다.
+async function loadBriefing() {
+  try {
+    briefingCache = isConfigured() ? await apiGet('briefing', {}) : mockBriefing();
+  } catch (err) {
+    console.error(err);
+    briefingCache = { summary: null, importance: {} };
+  }
+  renderBriefing(briefingCache);
+}
+
 async function loadNews(force) {
   try {
     // 실제 연동 시: 카테고리 5개를 각각 호출해 합치거나, action=news&category=all 로 한번에 받아오도록
@@ -843,11 +950,15 @@ async function loadNews(force) {
       const cats = ['world', 'domestic', 'politics_domestic', 'politics_intl'];
       const extra = force ? { nocache: 1 } : {};
       const results = await Promise.all(cats.map(function (c) { return apiGet('news', Object.assign({ category: c }, extra)); }));
-      const merged = results.flatMap(function (r) { return r.items || []; });
-      // 카테고리 순서대로 이어붙이면 "전체" 탭에서 뒤죽박죽으로 보이니,
-      // 실제 발행 시각 기준 최신순으로 다시 정렬한다.
-      merged.sort(function (a, b) { return new Date(b.pubDate) - new Date(a.pubDate); });
-      allNewsCache = merged;
+      // 같은 기사가 여러 카테고리에 동시에 잡히는 일이 흔하다(예: 국내정세 + 국제정세).
+      // 링크로 중복을 걸러내지 않으면 목록에 같은 기사가 두 번 뜬다.
+      const seen = {};
+      allNewsCache = results.flatMap(function (r) { return r.items || []; })
+        .filter(function (n) {
+          if (!n.link || seen[n.link]) return false;
+          seen[n.link] = true;
+          return true;
+        });
     } else {
       allNewsCache = mockNews().items;
     }
@@ -855,6 +966,8 @@ async function loadNews(force) {
     console.error(err);
     allNewsCache = mockNews().items;
   }
+  // 카테고리 순서대로 이어붙이면 "전체" 탭에서 뒤죽박죽으로 보이는데, 정렬은
+  // renderNews가 (중요도순/최신순 중 선택된 기준으로) 담당한다.
   renderNews(allNewsCache);
 }
 
@@ -923,13 +1036,23 @@ document.querySelectorAll('#newsTags button').forEach(function (btn) {
   });
 });
 
+document.querySelectorAll('#newsSort button').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('#newsSort button').forEach(function (b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    state.newsSort = btn.dataset.sort;
+    renderNews(allNewsCache);
+  });
+});
+
 // ---------- 초기 로드 + 자동 갱신 ----------
 function loadAll() {
   setupBannerCheck();
   loadRates();
   loadHistory();
   loadCalendar();
-  loadNews();
+  // 브리핑이 뉴스 정렬 기준(중요도 점수)을 들고 있으므로 뉴스보다 먼저 채워둔다.
+  loadBriefing().then(function () { loadNews(); });
 }
 
 // 백엔드(Code.gs)는 API 호출 한도를 아끼려고 지표를 15분씩 서버에서 캐시해둔다.
@@ -941,7 +1064,8 @@ async function manualRefresh() {
   btn.disabled = true;
   btn.textContent = '⏳ 새로고침 중…';
   try {
-    await Promise.all([loadRates(true), loadHistory(true), loadCalendar(true), loadNews(true)]);
+    await Promise.all([loadRates(true), loadHistory(true), loadCalendar(true), loadBriefing()]);
+    await loadNews(true); // 브리핑을 새로 받은 뒤 그 중요도로 다시 정렬한다
   } finally {
     btn.disabled = false;
     btn.textContent = '🔄 새로고침';
@@ -951,7 +1075,9 @@ document.getElementById('refreshBtn').addEventListener('click', manualRefresh);
 
 loadAll();
 setInterval(loadRates, 15 * 60 * 1000);   // 15분마다 지표 갱신
-setInterval(loadNews, 30 * 60 * 1000);    // 30분마다 뉴스 갱신
+setInterval(function () {                 // 30분마다 브리핑 + 뉴스 갱신
+  loadBriefing().then(function () { loadNews(); });
+}, 30 * 60 * 1000);
 </script>
 </body>
 </html>

@@ -21,6 +21,9 @@ function doGet(e) {
       case 'quote':
         result = getQuote((e.parameter && e.parameter.symbol) || '', noCache);
         break;
+      case 'briefing':
+        result = getBriefing();
+        break;
       default:
         result = { error: 'unknown action: ' + action };
     }
@@ -142,7 +145,7 @@ function fetchRatesParallel_() {
     const manual = props.getProperty('BASE_RATE_KR_MANUAL');
     baseRateKr = manual
       ? { value: parseFloat(manual), date: 'manual', note: 'ECOS 값 없음 - 수동 입력값 표시 중' }
-      : { error: 'ECOS 기준금리 값이 아직 없습니다. setupEcosTrigger()를 실행했는지 확인하세요.' };
+      : { error: 'ECOS 기준금리 값이 아직 없습니다. setupTriggers()를 실행했는지 확인하세요.' };
   }
 
   // usdkrw: 트리거가 받아둔 ECOS 값 → 없으면 방금 병렬로 받아둔 Yahoo(KRW=X) 결과.
@@ -197,16 +200,25 @@ var ECOS_MAX_AGE_MS_ = 26 * 60 * 60 * 1000; // 26시간 넘게 갱신 안 됐으
 
 /**
  * 이 프로젝트에서 딱 한 번만 실행하면 되는 설치 함수. Apps Script 편집기 상단의 함수
- * 드롭다운에서 골라 ▶ 실행하면, 30분마다 ECOS 값을 받아오는 트리거가 등록된다.
+ * 드롭다운에서 골라 ▶ 실행하면, 백그라운드 갱신 트리거가 전부 등록된다.
  * (여러 번 눌러도 기존 트리거를 지우고 다시 만들기 때문에 중복 생성되지 않는다.)
+ *
+ * - refreshEcosCache : ECOS 기준금리/환율
+ * - refreshAiBriefing: AI 브리핑 + 뉴스 중요도 (ANTHROPIC_API_KEY가 있을 때만 동작)
  */
-function setupEcosTrigger() {
+function setupTriggers() {
+  const handlers = ['refreshEcosCache', 'refreshAiBriefing'];
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'refreshEcosCache') ScriptApp.deleteTrigger(t);
+    if (handlers.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('refreshEcosCache').timeBased().everyMinutes(30).create();
-  refreshEcosCache(); // 30분 기다리지 않도록 지금 한 번 채워둔다
-  Logger.log('ECOS 트리거 등록 완료 (30분 주기). 현재 저장값: ' + PropertiesService.getScriptProperties().getProperty(ECOS_CACHE_PROP_));
+  handlers.forEach(function (fn) {
+    ScriptApp.newTrigger(fn).timeBased().everyMinutes(30).create();
+  });
+
+  // 30분 기다리지 않도록 지금 한 번씩 채워둔다.
+  refreshEcosCache();
+  refreshAiBriefing();
+  Logger.log('트리거 등록 완료 (각 30분 주기): ' + handlers.join(', '));
 }
 
 /** 트리거가 호출하는 함수. 직접 실행해도 된다(값을 즉시 갱신하고 싶을 때). */
@@ -789,37 +801,175 @@ function stripTags_(s) {
     .replace(/&amp;/g, '&');
 }
 
-/**
- * (선택/2주차 이후) Claude API로 "오늘의 한 줄 요약" 만들기.
- * 스크립트 속성에 ANTHROPIC_API_KEY를 추가하면 사용 가능.
- * 지금 단계에서는 필수 아님 — index.html은 이 값이 비어도 정상 동작함.
- */
-function getAIBriefing() {
-  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
-  if (!key) return { summary: null };
+// ================= 5. AI 브리핑 + 뉴스 중요도 (Claude API) =================
+// 네이버 뉴스 검색 API에는 "중요도" 개념이 없어서 최신순 정렬만 가능했다. 그날 헤드라인을
+// Claude에게 통째로 넘겨 요약과 중요도 점수를 **한 번의 호출로 같이** 받아서 그 문제를 푼다.
+//
+// ECOS와 같은 이유로 이 호출도 사용자 요청 경로에 두지 않는다 — 대시보드를 열 때마다
+// Claude 응답을 기다리면 느려지므로, 트리거가 미리 만들어 스크립트 속성에 저장해두고
+// doGet은 그 저장값만 읽는다.
+var ANTHROPIC_URL_ = 'https://api.anthropic.com/v1/messages';
+var AI_BRIEFING_PROP_ = 'AI_BRIEFING_V1';
+var AI_BRIEFING_MAX_AGE_MS_ = 3 * 60 * 60 * 1000; // 3시간 넘게 갱신 안 됐으면 오래됐다고 표시
 
-  const rates = getRates();
-  const news = getNews('all');
-  const prompt = '다음 지표와 뉴스 헤드라인을 바탕으로 한국어로 3~4문장짜리 오늘의 경제 브리핑을 작성해줘.\n' +
-    '지표: ' + JSON.stringify(rates) + '\n' +
-    '뉴스: ' + JSON.stringify(news.items.slice(0, 5).map(function (n) { return n.title; }));
+// 구조화된 출력(output_config.format) 스키마. 이걸 주면 응답이 반드시 이 형태의 JSON이라
+// 파싱 실패를 걱정하지 않아도 된다. 주의: 구조화된 출력은 minimum/maximum 같은 수치 제약을
+// 지원하지 않으므로 점수 범위는 enum으로 표현하고, 모든 object에 additionalProperties:false와
+// required가 있어야 한다.
+var BRIEFING_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    summary: {
+      type: 'string',
+      description: '오늘의 경제 브리핑. 한국어 3~4문장. 지표 흐름과 주요 뉴스를 엮어서 작성.'
+    },
+    rankings: {
+      type: 'array',
+      description: '입력으로 준 뉴스 전부에 대한 중요도 평가. 뉴스 하나당 항목 하나씩.',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer', description: '입력 뉴스 목록에서의 번호' },
+          importance: { type: 'integer', enum: [1, 2, 3, 4, 5], description: '5가 가장 중요' },
+          reason: { type: 'string', description: '그 점수를 준 이유. 한국어 한 문장.' }
+        },
+        required: ['id', 'importance', 'reason'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['summary', 'rankings'],
+  additionalProperties: false
+};
 
-  const res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+/** doGet에서 읽는 함수. 저장된 브리핑을 그대로 돌려준다(외부 호출 없음 = 즉시 응답). */
+function getBriefing() {
+  const raw = PropertiesService.getScriptProperties().getProperty(AI_BRIEFING_PROP_);
+  if (!raw) return { summary: null, importance: {} };
+  try {
+    const parsed = JSON.parse(raw);
+    parsed.importance = parsed.importance || {};
+    parsed.stale = !!(parsed.at && (Date.now() - new Date(parsed.at).getTime()) > AI_BRIEFING_MAX_AGE_MS_);
+    return parsed;
+  } catch (err) {
+    return { summary: null, importance: {} };
+  }
+}
+
+/** 트리거가 호출하는 함수. 직접 실행해도 된다(브리핑을 지금 바로 갱신하고 싶을 때). */
+function refreshAiBriefing() {
+  const props = PropertiesService.getScriptProperties();
+  const key = props.getProperty('ANTHROPIC_API_KEY');
+  if (!key) {
+    console.log('refreshAiBriefing: ANTHROPIC_API_KEY 미설정 - 건너뜀');
+    return;
+  }
+
+  const news = collectAllNews_();
+  if (!news.length) {
+    console.log('refreshAiBriefing: 뉴스를 못 받아와서 건너뜀(기존 값 유지)');
+    return;
+  }
+
+  const result = callClaudeBriefing_(key, safe_(getRates), news);
+  if (!result) return; // 실패 사유는 callClaudeBriefing_ 안에서 로그로 남긴다
+
+  // 중요도는 **링크를 키로** 저장한다. 프론트가 카테고리 필터를 걸면 배열 인덱스는
+  // 흔들리지만 링크는 고정이라 항목과 안전하게 맞춰볼 수 있다.
+  const importance = {};
+  (result.rankings || []).forEach(function (r) {
+    const item = news[r.id];
+    if (item && item.link) importance[item.link] = r.importance;
+  });
+
+  // 스크립트 속성은 값 하나당 9KB 제한이라 reason은 저장하지 않는다(점수만 있으면 정렬은 된다).
+  // 그래도 스키마에는 남겨둔다 — 이유를 함께 쓰게 하면 점수 자체가 더 정확해진다.
+  props.setProperty(AI_BRIEFING_PROP_, JSON.stringify({
+    summary: result.summary,
+    importance: importance,
+    at: new Date().toISOString()
+  }));
+  console.log('refreshAiBriefing: 갱신 완료 (뉴스 ' + news.length + '건)');
+}
+
+// 카테고리별로 나뉜 뉴스를 한 데 모은다. 'all'은 다른 카테고리와 겹치므로 링크로 중복 제거.
+function collectAllNews_() {
+  const out = [];
+  const seen = {};
+  ['all', 'world', 'domestic', 'politics_domestic', 'politics_intl'].forEach(function (c) {
+    try {
+      (getNews(c).items || []).forEach(function (n) {
+        if (!n.link || seen[n.link]) return;
+        seen[n.link] = true;
+        out.push(n);
+      });
+    } catch (err) {
+      console.log('collectAllNews_: ' + c + ' 실패(건너뜀) - ' + err);
+    }
+  });
+  return out;
+}
+
+function callClaudeBriefing_(apiKey, rates, news) {
+  const headlines = news.map(function (n, i) { return i + '. ' + n.title; }).join('\n');
+  const prompt =
+    '아래는 오늘 한국 경제 대시보드에 뜬 지표와 뉴스 헤드라인이야.\n\n' +
+    '[지표]\n' + JSON.stringify(rates) + '\n\n' +
+    '[뉴스 헤드라인]\n' + headlines + '\n\n' +
+    'summary에는 지표 흐름과 주요 뉴스를 엮어 한국어 3~4문장 브리핑을 써줘.\n' +
+    'rankings에는 위 뉴스 ' + news.length + '건 **전부**에 대해 번호(id)와 중요도(1~5)를 매겨줘.\n' +
+    '중요도는 "이 뉴스가 한국 투자자의 판단을 실제로 바꿀 만한가"를 기준으로 봐. ' +
+    '금리·환율·물가처럼 시장 전반에 영향을 주는 뉴스가 높고, 개별 홍보성·단신 기사는 낮아.';
+
+  const res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
     method: 'post',
     contentType: 'application/json',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01'
-    },
+    muteHttpExceptions: true,
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     payload: JSON.stringify({
-      model: 'claude-sonnet-4-5',
-      max_tokens: 300,
+      model: 'claude-opus-4-8',
+      max_tokens: 4000,
+      // 어떤 뉴스가 중요한지는 판단이 필요한 작업이라 적응형 사고를 켜두되, 트리거 안에서
+      // 도는 호출이라 effort는 낮게 잡아 응답 시간을 짧게 유지한다.
+      thinking: { type: 'adaptive' },
+      output_config: {
+        effort: 'low',
+        format: { type: 'json_schema', schema: BRIEFING_SCHEMA_ }
+      },
+      system: '너는 한국 개인 투자자를 위한 경제 브리핑 도우미야. 과장 없이 담백하게 쓴다.',
       messages: [{ role: 'user', content: prompt }]
-    }),
-    muteHttpExceptions: true
+    })
   });
-  const json = JSON.parse(res.getContentText());
-  const text = json.content && json.content[0] && json.content[0].text;
-  return { summary: text || null };
+
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  if (code >= 400) {
+    console.log('callClaudeBriefing_: HTTP ' + code + ' - ' + body.slice(0, 400));
+    return null;
+  }
+
+  const json = JSON.parse(body);
+  if (json.stop_reason === 'refusal') {
+    console.log('callClaudeBriefing_: 모델이 응답을 거부함');
+    return null;
+  }
+  if (json.stop_reason === 'max_tokens') {
+    console.log('callClaudeBriefing_: max_tokens에 걸려 응답이 잘림 - 저장하지 않음');
+    return null;
+  }
+
+  // 적응형 사고를 켜두면 thinking 블록이 앞에 오므로 content[0]을 그냥 쓰면 안 된다.
+  // 구조화된 출력을 켰으니 text 블록의 내용은 스키마에 맞는 JSON이 보장된다.
+  const textBlock = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!textBlock) {
+    console.log('callClaudeBriefing_: 응답에 text 블록이 없음');
+    return null;
+  }
+  try {
+    return JSON.parse(textBlock.text);
+  } catch (err) {
+    console.log('callClaudeBriefing_: JSON 파싱 실패 - ' + err);
+    return null;
+  }
 }
 
