@@ -24,6 +24,9 @@ function doGet(e) {
       case 'quotes':
         result = getQuotes((e.parameter && e.parameter.symbols) || '', noCache);
         break;
+      case 'market':
+        result = getMarket(noCache);
+        break;
       case 'briefing':
         result = getBriefing();
         break;
@@ -519,6 +522,95 @@ function getQuotes(symbolsCsv, noCache) {
   const data = { quotes: quotes };
   cachePut_(cacheKey, data, 300); // 5분 캐시 (시세라 짧게)
   return data;
+}
+
+// ---- 시가총액 상위 / 급등락 순위 (네이버 금융) ----
+// 코스피 전 종목의 시가총액과 등락률을 한 번에 주는 무료 소스가 마땅치 않다.
+//  - Yahoo screener: crumb 인증이 걸려 GAS에서 못 쓴다(quoteSummary와 같은 이유).
+//  - KRX data.krx.co.kr: 세션 보호가 걸려 있어 POST하면 "LOGOUT"만 돌아온다.
+// 그래서 네이버 금융의 시가총액 페이지를 파싱한다. 사용자가 "네이버 증권 메인 화면
+// 느낌"이라고 한 그 화면이기도 하다.
+//
+// ⚠️ HTML 스크래핑이라 네이버가 표 구조를 바꾸면 깨진다. 페이지당 50종목이고
+// 표의 각 행은 td 13칸으로 고정돼 있다:
+//   [0]순위 [1]종목명 [2]현재가 [3]전일비 [4]등락률 [5]액면가 [6]시가총액(억) [7]상장주식수(천주) ...
+// ⚠️ 이 페이지는 EUC-KR이다. getContentText()를 그냥 부르면 한글이 깨진다.
+var NAVER_SISE_URL_ = 'https://finance.naver.com/sise/sise_market_sum.naver';
+var MARKET_PAGES_ = 2; // 페이지당 50종목 → 상위 100종목
+
+function getMarket(noCache) {
+  const cached = noCache ? null : cacheGet_('market');
+  if (cached) return cached;
+
+  const jobs = [];
+  for (var p = 1; p <= MARKET_PAGES_; p++) {
+    jobs.push({
+      name: 'p' + p,
+      url: NAVER_SISE_URL_ + '?sosok=0&page=' + p, // sosok=0 코스피, 1 코스닥
+      headers: { 'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'] }
+    });
+  }
+
+  const responses = fetchJobsSafe_(jobs);
+  const items = [];
+  const seen = {};
+  responses.forEach(function (res, i) {
+    try {
+      if (!res) throw new Error('연결 오류');
+      const code = res.getResponseCode();
+      if (code >= 400) throw new Error('HTTP ' + code);
+      parseNaverSise_(res.getContentText('EUC-KR')).forEach(function (it) {
+        if (seen[it.code]) return; // 페이지 경계에서 겹치는 경우 대비
+        seen[it.code] = true;
+        items.push(it);
+      });
+    } catch (err) {
+      console.log('getMarket: ' + jobs[i].name + ' 실패(건너뜀) - ' + err);
+    }
+  });
+
+  const data = items.length
+    ? { items: items, at: new Date().toISOString() }
+    : { items: [], error: '순위를 불러오지 못했습니다.' };
+  cachePut_('market', data, 600); // 10분 캐시
+  return data;
+}
+
+function parseNaverSise_(html) {
+  const out = [];
+  const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
+  let tr;
+  while ((tr = trRe.exec(html)) !== null) {
+    const row = tr[1];
+    // 종목 행에만 종목 링크가 있다(합계/헤더 행 제외).
+    const codeMatch = row.match(/\/item\/main\.naver\?code=(\d+)/);
+    if (!codeMatch) continue;
+
+    const cells = [];
+    const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
+    let td;
+    while ((td = tdRe.exec(row)) !== null) {
+      cells.push(stripTags_(td[1]).replace(/\s+/g, ' ').trim());
+    }
+    if (cells.length < 8) continue;
+
+    const num = function (s) {
+      const v = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
+      return isNaN(v) ? null : v;
+    };
+    const name = cells[1];
+    const changePct = num(cells[4]);
+    if (!name || changePct === null) continue;
+
+    out.push({
+      code: codeMatch[1],
+      name: name,
+      price: num(cells[2]),
+      changePct: changePct,
+      marketCap: num(cells[6]) // 억원 단위
+    });
+  }
+  return out;
 }
 
 function md5_(s) {

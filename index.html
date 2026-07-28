@@ -281,6 +281,36 @@
   .watch-del:focus-visible{opacity:1;}
   .watch-card .sym{color:var(--sub);font-size:11px;margin-top:6px;}
   .watch-card.err .value{font-size:13px;font-weight:400;color:var(--sub);}
+
+  /* ---------- 종목 순위 ---------- */
+  .rank-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+  .rank-head h2{margin:0;}
+  .rank-tabs{display:flex;gap:6px;}
+  .rank-tabs button{
+    background:#0d1729;border:1px solid var(--panel-border);color:var(--sub);
+    font-size:11px;padding:5px 10px;border-radius:7px;cursor:pointer;font-family:inherit;
+    transition:background .12s ease,color .12s ease;
+  }
+  .rank-tabs button:hover{background:#13213b;color:var(--text);}
+  .rank-tabs button.active{background:var(--accent);color:#1a0e05;border-color:var(--accent);font-weight:600;}
+
+  /* 종목 수가 많아 표는 자체 스크롤로 묶는다. 가로도 좁은 화면에서 넘칠 수 있어 스크롤. */
+  .rank-wrap{max-height:420px;overflow:auto;}
+  table.rank{width:100%;border-collapse:collapse;font-size:13px;}
+  table.rank th,table.rank td{padding:8px 10px;text-align:right;white-space:nowrap;}
+  table.rank th{
+    position:sticky;top:0;background:var(--panel);z-index:1;
+    font-size:11px;color:var(--sub);font-weight:500;
+    border-bottom:1px solid var(--panel-border);
+  }
+  table.rank td{border-bottom:1px solid var(--panel-border);}
+  table.rank tr:last-child td{border-bottom:none;}
+  table.rank .c-rank{text-align:center;color:var(--sub);width:36px;}
+  table.rank .c-name{text-align:left;}
+  table.rank .c-name a{color:var(--text);text-decoration:none;}
+  table.rank .c-name a:hover{text-decoration:underline;color:var(--accent);}
+  table.rank .c-cap{color:var(--sub);}
+  .rank-empty{color:var(--sub);font-size:13px;}
 </style>
 </head>
 <body>
@@ -349,6 +379,33 @@
     </div>
   </section>
 
+  <section class="panel">
+    <div class="rank-head">
+      <h2>종목 순위 <span class="watch-count">코스피 상위 100</span></h2>
+      <div class="rank-tabs" id="rankTabs">
+        <button data-view="cap" class="active">시가총액</button>
+        <button data-view="up">상승률</button>
+        <button data-view="down">하락률</button>
+      </div>
+    </div>
+    <div class="rank-wrap">
+      <table class="rank">
+        <thead>
+          <tr>
+            <th class="c-rank">#</th>
+            <th class="c-name">종목</th>
+            <th>현재가</th>
+            <th>등락률</th>
+            <th class="c-cap">시가총액</th>
+          </tr>
+        </thead>
+        <tbody id="rankBody">
+          <tr><td colspan="5" class="rank-empty">불러오는 중…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="grid2">
     <div class="panel">
       <h2>지표 히스토리 — 코스피 vs 나스닥</h2>
@@ -402,7 +459,7 @@
 </div>
 
 <script>
-const state = { range: '3M', category: 'all', newsSort: 'importance', chart: null, usingMock: false };
+const state = { range: '3M', category: 'all', newsSort: 'importance', rankView: 'cap', chart: null, usingMock: false };
 
 function isConfigured() {
   return typeof GAS_URL === 'string' && GAS_URL.indexOf('http') === 0;
@@ -1022,6 +1079,71 @@ document.querySelectorAll('.range-btns button').forEach(function (btn) {
   });
 });
 
+// ---------- 종목 순위 ----------
+// 백엔드가 네이버 금융에서 코스피 상위 100종목을 받아온다(시가총액 순).
+// 상승/하락 탭은 그 100종목을 등락률로 다시 정렬한 것 — 전체 시장이 아니라
+// "주요 종목 중" 순위다. 소형주 급등주는 여기 안 들어온다.
+let marketCache = [];
+
+function fmtCap(억) {
+  if (억 == null) return '-';
+  return 억 >= 10000 ? (억 / 10000).toFixed(1) + '조' : Math.round(억).toLocaleString() + '억';
+}
+
+function renderMarket() {
+  const body = document.getElementById('rankBody');
+  if (!marketCache.length) {
+    body.innerHTML = '<tr><td colspan="5" class="rank-empty">순위를 불러오지 못했어요.</td></tr>';
+    return;
+  }
+  const list = marketCache.slice();
+  if (state.rankView === 'up') list.sort(function (a, b) { return b.changePct - a.changePct; });
+  else if (state.rankView === 'down') list.sort(function (a, b) { return a.changePct - b.changePct; });
+  // 'cap'은 백엔드가 이미 시가총액 순으로 준 순서 그대로.
+
+  body.innerHTML = list.slice(0, 30).map(function (x, i) {
+    const cls = changeClass(x.changePct);
+    return '<tr>' +
+      '<td class="c-rank">' + (i + 1) + '</td>' +
+      '<td class="c-name"><a href="https://finance.naver.com/item/main.naver?code=' + esc_(x.code) +
+        '" target="_blank" rel="noopener">' + esc_(x.name) + '</a></td>' +
+      '<td>' + (x.price == null ? '-' : fmtNum(x.price, 0)) + '</td>' +
+      '<td class="change ' + cls + '">' + changeArrow(x.changePct) + ' ' + fmtNum(Math.abs(x.changePct), 2) + '%</td>' +
+      '<td class="c-cap">' + fmtCap(x.marketCap) + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+async function loadMarket(force) {
+  try {
+    const data = isConfigured() ? await apiGet('market', force ? { nocache: 1 } : {}) : mockMarket();
+    marketCache = data.items || [];
+  } catch (err) {
+    console.error(err);
+    marketCache = [];
+  }
+  renderMarket();
+}
+
+function mockMarket() {
+  return {
+    items: [
+      { code: '005930', name: '삼성전자(목업)', price: 220000, changePct: -13.39, marketCap: 12861813 },
+      { code: '000660', name: 'SK하이닉스(목업)', price: 1550000, changePct: -14.65, marketCap: 11046887 },
+      { code: '207940', name: '삼성바이오로직스(목업)', price: 1050000, changePct: 0.26, marketCap: 747000 }
+    ]
+  };
+}
+
+document.querySelectorAll('#rankTabs button').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('#rankTabs button').forEach(function (b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    state.rankView = btn.dataset.view;
+    renderMarket();
+  });
+});
+
 // ---------- 관심종목(워치리스트) ----------
 // 목록은 브라우저에만 저장한다. 서버에 두려면 공개 URL(ANYONE_ANONYMOUS)에 쓰기
 // 엔드포인트를 열어야 하는데, 그러면 URL을 아는 누구나 남의 목록을 바꿀 수 있다.
@@ -1218,6 +1340,7 @@ function loadAll() {
   loadHistory();
   loadCalendar();
   loadWatchQuotes();
+  loadMarket();
   // 브리핑이 뉴스 정렬 기준(중요도 점수)을 들고 있으므로 뉴스보다 먼저 채워둔다.
   loadBriefing().then(function () { loadNews(); });
 }
@@ -1231,7 +1354,7 @@ async function manualRefresh() {
   btn.disabled = true;
   btn.textContent = '⏳ 새로고침 중…';
   try {
-    await Promise.all([loadRates(true), loadHistory(true), loadCalendar(true), loadWatchQuotes(true), loadBriefing()]);
+    await Promise.all([loadRates(true), loadHistory(true), loadCalendar(true), loadWatchQuotes(true), loadMarket(true), loadBriefing()]);
     await loadNews(true); // 브리핑을 새로 받은 뒤 그 중요도로 다시 정렬한다
   } finally {
     btn.disabled = false;
@@ -1243,6 +1366,7 @@ document.getElementById('refreshBtn').addEventListener('click', manualRefresh);
 loadAll();
 setInterval(loadRates, 15 * 60 * 1000);   // 15분마다 지표 갱신
 setInterval(loadWatchQuotes, 15 * 60 * 1000); // 관심종목도 같은 주기로
+setInterval(loadMarket, 15 * 60 * 1000);      // 종목 순위도 같은 주기로
 setInterval(function () {                 // 30분마다 브리핑 + 뉴스 갱신
   loadBriefing().then(function () { loadNews(); });
 }, 30 * 60 * 1000);

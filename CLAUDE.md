@@ -10,15 +10,18 @@
 - `docs/` — API 발급 가이드, 배포 가이드, 진행보고서(docx).
 - `README.md` — 프로젝트 개요, `SETUP_GUIDE.md` — 로컬 환경 세팅 절차 (이미 완료된 상태).
 
-## 사용 API (5종)
+## 사용 API / 데이터 소스
 
-| API | 용도 | 키 필요 |
+| 소스 | 용도 | 키 필요 |
 |---|---|---|
 | 한국은행 ECOS | 기준금리(한), 원/달러 환율 | O |
-| FRED | 기준금리(미), WTI 유가 | O |
-| Yahoo Finance (비공식) | 코스피·나스닥·금·비트코인 시세, 종목 검색 | X |
-| Finnhub | 기업 실적 캘린더 | O |
+| FRED | 기준금리(미), WTI 유가, 매크로 발표 일정 | O |
+| Yahoo Finance (비공식) | 지수·금·비트코인 시세, 종목 검색, 관심종목 | X |
+| Finnhub | 해외 대형주 실적 캘린더 | O |
 | 네이버 뉴스 검색 | 경제 뉴스 피드 | O |
+| Anthropic Claude | AI 브리핑 + 뉴스 중요도 채점 | O (유료) |
+| KIND (한국거래소) | 국내 코스피 실적 발표 일정 | X (HTML 파싱) |
+| 네이버 금융 | 시가총액·등락률 순위 | X (HTML 파싱) |
 
 API 키는 전부 GAS 스크립트 속성(서버 측)에만 저장 — 코드에 하드코딩 금지.
 
@@ -77,7 +80,7 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
   FRED는 특정 통계가 아니라 **모든** 발표 일정을 주므로 두 달치가 한 페이지(1000건)를
   넘는다(실측 1638건). `collectFredPages_`로 남은 페이지를 병렬로 이어붙이지 않으면
   뒷달이 통째로 사라진다. `parseFredReleases_`는 응답 객체가 아니라 **행 배열**을 받는다.
-- **AI 브리핑 (Claude API)**: `refreshAiBriefing()`이 30분 주기 트리거로 돌면서 그날 뉴스 전체를
+- **AI 브리핑 (Claude API)**: `refreshAiBriefing()`이 3시간 주기 트리거로 돌면서 그날 뉴스 전체를
   Claude에 넘겨 요약 + 뉴스별 중요도(1~5)를 받아 스크립트 속성 `AI_BRIEFING_V1`에 저장하고,
   `doGet(action=briefing)`은 그 저장값만 읽는다(ECOS와 같은 이유 — 대시보드가 Claude 응답을
   기다리면 안 되므로 **요청 경로에서 호출하지 말 것**). `ANTHROPIC_API_KEY`가 없으면 조용히
@@ -99,6 +102,17 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
     이유를 쓰게 하면 점수가 더 정확해진다).
 - **뉴스 중복**: 같은 기사가 여러 카테고리에 동시에 잡힌다(국내정세 + 국제정세 등). 백엔드
   `collectAllNews_`와 프론트 `loadNews` **양쪽 모두** 링크로 중복을 걸러야 한다.
+- **종목 순위 = 네이버 금융 스크래핑**: 코스피 전 종목의 시가총액+등락률을 주는 무료 소스가
+  마땅치 않다. Yahoo screener는 **crumb 인증**이 걸려 GAS에서 못 쓰고(quoteSummary와 같은 이유),
+  KRX `data.krx.co.kr`은 **세션 보호**라 POST하면 `LOGOUT`만 돌아온다(쿠키를 붙여도 실패).
+  그래서 `finance.naver.com/sise/sise_market_sum.naver`를 파싱한다(GAS 접근 가능 확인됨).
+  - ⚠️ **이 페이지는 EUC-KR이다.** `getContentText()`를 그냥 부르면 한글이 깨진다 —
+    반드시 `getContentText('EUC-KR')`.
+  - 표는 한 행이 td 13칸 고정: `[0]순위 [1]종목명 [2]현재가 [3]전일비 [4]등락률 [5]액면가
+    [6]시가총액(억) [7]상장주식수(천주)`. 종목 행은 `/item/main.naver?code=` 링크로 식별한다.
+  - 페이지당 50종목, `MARKET_PAGES_`로 조절(현재 2 = 상위 100).
+  - 상승/하락 탭은 **그 100종목을 다시 정렬한 것**이지 전체 시장 순위가 아니다.
+    소형주 급등주는 안 들어온다.
 - **관심종목(워치리스트)**: 목록은 **브라우저 localStorage**(`ewequity.watchlist`)에만 있다.
   서버에 두려면 공개 URL(`ANYONE_ANONYMOUS`)에 쓰기 엔드포인트를 열어야 하는데 그러면
   URL을 아는 누구나 남의 목록을 바꿀 수 있다 — **쓰기 엔드포인트를 추가하지 말 것.**
@@ -130,8 +144,7 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
 
 ## 로드맵 (참고용, 아직 미착수)
 
-- AI 자동 브리핑 (Claude API 연동, `getAIBriefing()` 함수 뼈대만 작성됨)
-- ~~관심종목(워치리스트)~~ (2026-07-29 완료) — 시가총액 상위/급등락 순위는 아직
+- ~~관심종목(워치리스트), 시가총액 상위/급등락 순위~~ (2026-07-29 완료)
 - 다크모드 등 UI 폴리싱
 - 매일 아침 이메일 자동 발송
 - 계좌 연동(한국투자증권 Open API, 모의투자), 모바일 앱(Flutter) — 기획서 원안 Phase 2
