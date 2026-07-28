@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EweQuity — 매일 아침 경제 브리핑 대시보드</title>
+<style>
+  :root{
+    --bg:#0b1424;
+    --panel:#121d33;
+    --panel-border:#233047;
+    --text:#e8edf6;
+    --sub:#8593ab;
+    --up:#ff5c5c;
+    --down:#3aa0ff;
+    --accent:#ff7a45;
+    --accent2:#3aa0ff;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    padding:24px;
+  }
+  .wrap{max-width:1200px;margin:0 auto;}
+
+  header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px;}
+  .logo{font-size:28px;font-weight:800;letter-spacing:-0.5px;}
+  .logo span.ewe{color:var(--accent);}
+  .logo span.quity{color:var(--text);}
+  .subtitle{color:var(--sub);font-size:13px;margin-top:4px;}
+  .updated-wrap{display:flex;align-items:center;gap:12px;}
+  .updated{color:var(--sub);font-size:12px;text-align:right;}
+  .updated b{color:var(--text);}
+  .refresh-btn{
+    background:#0d1729;border:1px solid var(--panel-border);color:var(--text);
+    font-size:12px;padding:7px 12px;border-radius:8px;cursor:pointer;white-space:nowrap;
+    transition:background .12s ease, opacity .12s ease;
+  }
+  .refresh-btn:hover{background:#13213b;}
+  .refresh-btn:disabled{opacity:.5;cursor:default;}
+
+  .setup-banner{
+    display:none;
+    background:#2a2210;border:1px solid #6b5518;color:#ffd580;
+    padding:12px 16px;border-radius:10px;font-size:13px;margin-bottom:20px;line-height:1.6;
+  }
+  .setup-banner code{background:#00000040;padding:2px 6px;border-radius:4px;}
+
+  .cards{
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(180px,1fr));
+    gap:14px;
+    margin-bottom:20px;
+  }
+  .card{
+    background:var(--panel);
+    border:1px solid var(--panel-border);
+    border-left:3px solid var(--accent2);
+    border-radius:12px;
+    padding:16px;
+  }
+  .card.up{border-left-color:var(--up);}
+  .card.down{border-left-color:var(--down);}
+  .card .label{color:var(--sub);font-size:12px;margin-bottom:8px;}
+  .card .value{font-size:22px;font-weight:700;}
+  .card .change{font-size:12px;margin-top:6px;}
+  .change.pos{color:var(--up);}
+  .change.neg{color:var(--down);}
+  .change.flat{color:var(--sub);}
+
+  .grid2{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:20px;}
+  @media (max-width:900px){ .grid2{grid-template-columns:1fr;} }
+  /* 그리드 아이템의 기본 min-width:auto는 내부 콘텐츠(캔버스 등)의 intrinsic 크기를
+     트랙 최소 크기로 반영해버려서, 차트 갱신 때마다 canvas.width가 커지면 옆 칸(캘린더)이
+     찌부러드는 원인이 된다. min-width:0으로 그 계산에서 캔버스 intrinsic 크기를 제외한다. */
+  .grid2 > .panel{min-width:0;}
+
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--panel-border);
+    border-radius:12px;
+    padding:18px;
+  }
+  .panel h2{font-size:15px;margin:0 0 14px 0;}
+
+  .range-btns{display:flex;gap:6px;margin-bottom:10px;}
+  .range-btns button{
+    background:transparent;border:1px solid var(--panel-border);color:var(--sub);
+    padding:4px 12px;border-radius:20px;font-size:12px;cursor:pointer;
+  }
+  .range-btns button.active{background:var(--accent);color:#1a0e05;border-color:var(--accent);font-weight:600;}
+
+  .calendar-list{list-style:none;margin:0;padding:0;font-size:13px;}
+  .calendar-list li{padding:8px 0;border-bottom:1px solid var(--panel-border);}
+  .calendar-list li:last-child{border-bottom:none;}
+  .calendar-list .cdate{color:var(--accent);font-weight:600;margin-right:8px;}
+
+  .news-tags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+  .news-tags button{
+    background:#1c2942;border:1px solid var(--panel-border);color:var(--sub);
+    padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer;
+  }
+  .news-tags button.active{background:var(--accent2);color:#04101f;border-color:var(--accent2);font-weight:600;}
+
+  .news-list{display:flex;flex-direction:column;gap:10px;}
+  .news-item{padding:10px 0;border-bottom:1px solid var(--panel-border);}
+  .news-item:last-child{border-bottom:none;}
+  .news-item a{color:var(--text);text-decoration:none;font-size:14px;font-weight:500;}
+  .news-item a:hover{color:var(--accent);}
+  .news-item .meta{color:var(--sub);font-size:11px;margin-top:4px;}
+
+  .loading, .empty{color:var(--sub);font-size:13px;padding:12px 0;}
+  canvas{max-height:280px;display:block;max-width:100%;}
+
+  .card .label{position:relative;display:inline-block;}
+  .card .label[data-tip]{cursor:help;border-bottom:1px dotted var(--sub);}
+  .card .label[data-tip]::after{
+    content:attr(data-tip);
+    position:absolute;
+    left:0;
+    top:calc(100% + 8px);
+    background:#0d1729;
+    border:1px solid var(--panel-border);
+    color:var(--text);
+    font-size:12px;
+    line-height:1.5;
+    font-weight:400;
+    padding:10px 12px;
+    border-radius:8px;
+    width:230px;
+    white-space:normal;
+    z-index:30;
+    opacity:0;
+    visibility:hidden;
+    pointer-events:none;
+    box-shadow:0 8px 24px rgba(0,0,0,.45);
+    transition:opacity .12s ease;
+  }
+  .card .label[data-tip]:hover::after{opacity:1;visibility:visible;}
+
+  .search-box{display:flex;gap:8px;margin-bottom:14px;}
+  .search-box input{
+    flex:1;background:#0d1729;border:1px solid var(--panel-border);color:var(--text);
+    padding:8px 12px;border-radius:8px;font-size:13px;
+  }
+  .search-box input:focus{outline:none;border-color:var(--accent2);}
+  .search-box button{
+    background:var(--accent2);border:none;color:#04101f;font-weight:600;
+    padding:8px 18px;border-radius:8px;font-size:13px;cursor:pointer;
+  }
+  .search-hint{color:var(--sub);font-size:11px;margin:-8px 0 14px 0;}
+  .search-result{
+    display:none;background:#0d1729;border:1px solid var(--panel-border);
+    border-left:3px solid var(--accent2);border-radius:10px;padding:14px 16px;
+  }
+  .search-result.show{display:block;}
+  .search-result .sr-symbol{color:var(--sub);font-size:12px;}
+  .search-result .sr-value{font-size:22px;font-weight:700;margin-top:4px;}
+  .search-result .sr-change{font-size:13px;margin-top:4px;}
+  .search-result.error{border-left-color:var(--up);color:var(--sub);font-size:13px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ⚠️ 여기에 배포한 Google Apps Script 웹 앱 URL을 넣으세요 -->
+  <script>
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbzmBT3V0ZYu5gGmNpQSU0L963JylyfhqHgqlz0QHfJzgwr5bkqJGhnX1mRIg3ReBGgb/exec";
+  </script>
+
+  <header>
+    <div>
+      <div class="logo"><span class="ewe">Ewe</span><span class="quity">Quity</span></div>
+      <div class="subtitle">매일 아침 경제 브리핑 대시보드</div>
+    </div>
+    <div class="updated-wrap">
+      <div class="updated">마지막 업데이트<br><b id="updatedAt">-</b></div>
+      <button id="refreshBtn" class="refresh-btn" type="button" title="캐시를 건너뛰고 지금 바로 새 데이터를 가져옵니다">🔄 새로고침</button>
+    </div>
+  </header>
+
+  <div class="setup-banner" id="setupBanner">
+    ⚠️ 아직 GAS_URL이 설정되지 않았어요. index.html 상단의 <code>GAS_URL</code> 값을
+    배포한 Google Apps Script 웹 앱 주소로 바꿔주세요. 지금은 화면 확인용 <b>목업 데이터</b>로 표시 중입니다.
+    (배포 방법은 배포_가이드.md 참고)
+  </div>
+
+  <section class="cards" id="cards">
+    <div class="card"><div class="label">기준금리 (한/미)</div><div class="value">불러오는 중…</div></div>
+    <div class="card"><div class="label">USD-KRW 환율</div><div class="value">불러오는 중…</div></div>
+    <div class="card"><div class="label">국제유가 (WTI)</div><div class="value">불러오는 중…</div></div>
+    <div class="card"><div class="label">코스피</div><div class="value">불러오는 중…</div></div>
+    <div class="card"><div class="label">나스닥</div><div class="value">불러오는 중…</div></div>
+    <div class="card"><div class="label">금 (Gold)</div><div class="value">불러오는 중…</div></div>
+    <div class="card"><div class="label">비트코인</div><div class="value">불러오는 중…</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>종목 검색</h2>
+    <div class="search-box">
+      <input id="quoteInput" type="text" placeholder="종목명 또는 코드 입력 (예: 삼성전자, 애플, AAPL, 005930.KS)">
+      <button id="quoteBtn">조회</button>
+    </div>
+    <div class="search-hint">종목명만 입력해도 자동으로 코드를 찾아서 조회해요. (드물게 못 찾는 종목은 정확한 코드로 입력해주세요)</div>
+    <div class="search-result" id="quoteResult"></div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <h2>지표 히스토리 — 코스피 vs 나스닥</h2>
+      <div class="range-btns">
+        <button data-range="1M">1M</button>
+        <button data-range="3M" class="active">3M</button>
+        <button data-range="1Y">1Y</button>
+      </div>
+      <canvas id="historyChart"></canvas>
+    </div>
+    <div class="panel">
+      <h2>이번 달 경제 캘린더 (기업 실적발표)</h2>
+      <ul class="calendar-list" id="calendarList">
+        <li class="loading">불러오는 중…</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>오늘의 경제 뉴스</h2>
+    <div class="news-tags" id="newsTags">
+      <button data-cat="all" class="active">전체</button>
+      <button data-cat="world">세계경제</button>
+      <button data-cat="domestic">국내경제</button>
+      <button data-cat="politics_domestic">국내정세</button>
+      <button data-cat="politics_intl">국제정세</button>
+    </div>
+    <div class="news-list" id="newsList">
+      <div class="loading">불러오는 중…</div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const state = { range: '3M', category: 'all', chart: null, usingMock: false };
+
+function isConfigured() {
+  return typeof GAS_URL === 'string' && GAS_URL.indexOf('http') === 0;
+}
+
+async function apiGet(action, params) {
+  if (!isConfigured()) throw new Error('GAS_URL not set');
+  const usp = new URLSearchParams(Object.assign({ action }, params || {}));
+  const res = await fetch(GAS_URL + '?' + usp.toString());
+  if (!res.ok) throw new Error('API error ' + res.status);
+  return res.json();
+}
+
+// ---------- 목업 데이터 (GAS_URL 설정 전 화면 확인용) ----------
+function mockRates() {
+  return {
+    base_rate_kr: { value: 3.50, date: '2026-07' },
+    base_rate_us: { value: 3.75, date: '2026-06' },
+    usdkrw: { value: 1522.50, change: -5.7, date: '2026-07-08' },
+    wti: { value: 74.82, change: 0.9, date: '2026-07-07' },
+    kospi: { value: 7782.44, change: 1.65, changePct: 1.65, date: '2026-07-08' },
+    nasdaq: { value: 22140.6, change: 0.8, changePct: 0.8, date: '2026-07-08' },
+    gold: { value: 3350.2, change: 12.4, changePct: 0.37, date: '2026-07-08' },
+    btc: { value: 118500, change: -1200, changePct: -1.0, date: '2026-07-08' },
+    updatedAt: new Date().toISOString()
+  };
+}
+function mockHistory() {
+  const days = 60;
+  const kospi = [], nasdaq = [];
+  let k = 7500, n = 21500;
+  for (let i = days; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000);
+    const date = d.toISOString().slice(0, 10);
+    k += (Math.random() - 0.45) * 40;
+    n += (Math.random() - 0.45) * 100;
+    kospi.push({ date, close: Math.round(k) });
+    nasdaq.push({ date, close: Math.round(n) });
+  }
+  return { kospi, nasdaq };
+}
+function mockCalendar() {
+  return { earnings: [
+    { date: '2026-07-07', symbol: '삼성전자', hour: 'bmo' },
+    { date: '2026-07-10', symbol: 'SK하이닉스 ADR', hour: 'amc' },
+    { date: '2026-07-29', symbol: 'SK하이닉스', hour: 'bmo' }
+  ]};
+}
+function mockNews() {
+  const all = [
+    { title: '코스피, 장중 3% 급락했다가 상승 전환… 개인·기관 순매도 축소', link: '#', pubDate: '1시간 전', category: 'domestic' },
+    { title: '원/달러 환율 1,522.5원 개장, 전일 대비 5.7원 하락', link: '#', pubDate: '1시간 전', category: 'world' },
+    { title: 'SK하이닉스 ADR 매수세 유입에 반도체 업종 강세', link: '#', pubDate: '2시간 전', category: 'domestic' }
+  ];
+  return { items: all };
+}
+
+// ---------- 렌더링 ----------
+function fmtNum(n, digits) {
+  if (n == null || isNaN(n)) return '-';
+  return Number(n).toLocaleString('ko-KR', { maximumFractionDigits: digits != null ? digits : 2 });
+}
+
+function changeClass(v) {
+  if (v == null || isNaN(v) || v === 0) return 'flat';
+  return v > 0 ? 'pos' : 'neg';
+}
+function changeArrow(v) {
+  if (v == null || isNaN(v) || v === 0) return '–';
+  return v > 0 ? '▲' : '▼';
+}
+
+// 경제용어 간단 설명 — 카드 라벨에 마우스 올리면 뜨는 툴팁
+const GLOSSARY = {
+  '기준금리 (한/미)': '중앙은행이 시중은행과 거래할 때 기준이 되는 금리. 예금·대출 금리, 환율, 물가에 두루 영향을 줌.',
+  'USD-KRW 환율': '미국 달러 1달러를 원화로 환산한 가격. 오르면 원화 가치 하락(원화 약세), 내리면 원화 가치 상승(원화 강세).',
+  '국제유가 (WTI)': '서부텍사스산 원유(WTI) 기준 국제 유가. 물가·물류비에 직결되는 대표적인 원자재 지표.',
+  '코스피': '한국거래소 유가증권시장(코스피) 상장기업 전체의 주가를 지수화한 값.',
+  '나스닥': '미국 나스닥 시장에 상장된 기술주 중심 종합주가지수.',
+  '금 (Gold)': '안전자산으로 분류되는 금 선물 가격(온스당 달러). 불확실성이 커지면 대체로 상승하는 경향.',
+  '비트코인': '대표적인 암호화폐. 주식·채권과 상관관계가 낮아 대안자산으로도 언급됨.'
+};
+
+function renderCards(rates) {
+  const cardsEl = document.getElementById('cards');
+  const kr = rates.base_rate_kr || {}, us = rates.base_rate_us || {};
+  const items = [
+    {
+      label: '기준금리 (한/미)',
+      value: fmtNum(kr.value, 2) + '% / ' + fmtNum(us.value, 2) + '%',
+      change: null
+    },
+    {
+      label: 'USD-KRW 환율',
+      value: fmtNum(rates.usdkrw && rates.usdkrw.value, 2) + '원',
+      change: rates.usdkrw && rates.usdkrw.change,
+      changeLabel: (rates.usdkrw ? fmtNum(Math.abs(rates.usdkrw.change), 1) : '-') + '원 (전일 대비)'
+    },
+    {
+      label: '국제유가 (WTI)',
+      value: '$' + fmtNum(rates.wti && rates.wti.value, 2),
+      change: rates.wti && rates.wti.change,
+      changeLabel: (rates.wti ? fmtNum(Math.abs(rates.wti.change), 2) : '-') + '달러'
+    },
+    {
+      label: '코스피',
+      value: fmtNum(rates.kospi && rates.kospi.value, 2),
+      change: rates.kospi && rates.kospi.changePct,
+      changeLabel: (rates.kospi ? fmtNum(Math.abs(rates.kospi.changePct), 2) : '-') + '%'
+    },
+    {
+      label: '나스닥',
+      value: fmtNum(rates.nasdaq && rates.nasdaq.value, 1),
+      change: rates.nasdaq && rates.nasdaq.changePct,
+      changeLabel: (rates.nasdaq ? fmtNum(Math.abs(rates.nasdaq.changePct), 2) : '-') + '%'
+    },
+    {
+      label: '금 (Gold)',
+      value: '$' + fmtNum(rates.gold && rates.gold.value, 1),
+      change: rates.gold && rates.gold.changePct,
+      changeLabel: (rates.gold ? fmtNum(Math.abs(rates.gold.changePct), 2) : '-') + '%'
+    },
+    {
+      label: '비트코인',
+      value: '$' + fmtNum(rates.btc && rates.btc.value, 0),
+      change: rates.btc && rates.btc.changePct,
+      changeLabel: (rates.btc ? fmtNum(Math.abs(rates.btc.changePct), 2) : '-') + '%'
+    }
+  ];
+
+  cardsEl.innerHTML = items.map(function (it) {
+    const cls = changeClass(it.change);
+    const cardCls = it.change == null ? '' : (it.change > 0 ? 'up' : it.change < 0 ? 'down' : '');
+    const changeHtml = it.change == null
+      ? ''
+      : '<div class="change ' + cls + '">' + changeArrow(it.change) + ' ' + it.changeLabel + '</div>';
+    const tip = GLOSSARY[it.label] ? ' data-tip="' + GLOSSARY[it.label].replace(/"/g, '&quot;') + '"' : '';
+    return '<div class="card ' + cardCls + '">' +
+      '<div class="label"' + tip + '>' + it.label + '</div>' +
+      '<div class="value">' + it.value + '</div>' +
+      changeHtml +
+      '</div>';
+  }).join('');
+
+  document.getElementById('updatedAt').textContent =
+    new Date(rates.updatedAt || Date.now()).toLocaleString('ko-KR');
+}
+
+// 외부 차트 라이브러리(Chart.js)를 CDN에서 못 불러오는 환경(네트워크 제한/확장프로그램 차단 등)이
+// 있어서, 외부 의존성 없이 캔버스 2D API로 직접 그리는 방식으로 대체함.
+let lastHistoryData = null;
+
+function fmtAxis_(n) {
+  if (n == null || isNaN(n)) return '-';
+  return Number(n).toLocaleString('ko-KR', { maximumFractionDigits: 0 });
+}
+
+function drawDualLineChart_(canvas, series) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.parentElement.clientWidth;
+  const cssHeight = 260;
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  canvas.width = Math.max(1, Math.round(cssWidth * dpr));
+  canvas.height = Math.max(1, Math.round(cssHeight * dpr));
+
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const pad = { top: 24, right: 52, bottom: 22, left: 52 };
+  const plotW = Math.max(1, cssWidth - pad.left - pad.right);
+  const plotH = Math.max(1, cssHeight - pad.top - pad.bottom);
+
+  // 격자선
+  ctx.strokeStyle = '#1c2942';
+  ctx.lineWidth = 1;
+  const rows = 4;
+  for (let i = 0; i <= rows; i++) {
+    const y = pad.top + (plotH / rows) * i;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(cssWidth - pad.right, y);
+    ctx.stroke();
+  }
+
+  const n = Math.max.apply(null, series.map(function (s) { return s.data.length; }).concat([0]));
+  if (!n) {
+    ctx.fillStyle = '#8593ab';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('표시할 데이터가 없습니다.', cssWidth / 2, cssHeight / 2);
+    return;
+  }
+
+  series.forEach(function (s, idx) {
+    const values = s.data.map(function (d) { return d.close; });
+    if (!values.length) return;
+    const min = Math.min.apply(null, values);
+    const max = Math.max.apply(null, values);
+    const range = (max - min) || Math.abs(max) || 1;
+
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    values.forEach(function (v, i) {
+      const x = pad.left + (values.length <= 1 ? 0 : (plotW * i) / (values.length - 1));
+      const y = pad.top + plotH - ((v - min) / range) * plotH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    ctx.fillStyle = s.color;
+    ctx.font = '11px sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = idx === 0 ? 'right' : 'left';
+    const labelX = idx === 0 ? pad.left - 8 : cssWidth - pad.right + 8;
+    ctx.fillText(fmtAxis_(max), labelX, pad.top);
+    ctx.fillText(fmtAxis_(min), labelX, pad.top + plotH);
+  });
+
+  // x축 날짜 라벨 (처음/중간/끝)
+  const longest = series.reduce(function (a, b) { return a.data.length >= b.data.length ? a : b; });
+  const labels = longest.data.map(function (d) { return d.date; });
+  ctx.fillStyle = '#8593ab';
+  ctx.font = '11px sans-serif';
+  ctx.textBaseline = 'top';
+  const idxs = [0, Math.floor((labels.length - 1) / 2), labels.length - 1];
+  idxs.forEach(function (i, k) {
+    if (i < 0 || !labels[i]) return;
+    const x = pad.left + (labels.length <= 1 ? 0 : (plotW * i) / (labels.length - 1));
+    ctx.textAlign = k === 0 ? 'left' : k === idxs.length - 1 ? 'right' : 'center';
+    ctx.fillText(labels[i], x, pad.top + plotH + 6);
+  });
+
+  // 범례
+  ctx.textBaseline = 'alphabetic';
+  let lx = pad.left;
+  series.forEach(function (s) {
+    ctx.fillStyle = s.color;
+    ctx.fillRect(lx, 4, 10, 10);
+    ctx.fillStyle = '#8593ab';
+    ctx.textAlign = 'left';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(s.label, lx + 14, 13);
+    lx += ctx.measureText(s.label).width + 34;
+  });
+}
+
+function renderChart(history) {
+  lastHistoryData = history;
+  const canvas = document.getElementById('historyChart');
+  const kospi = (history.kospi || []).filter(function (d) { return d.close != null; });
+  const nasdaq = (history.nasdaq || []).filter(function (d) { return d.close != null; });
+  drawDualLineChart_(canvas, [
+    { label: 'KOSPI', color: '#ff5c5c', data: kospi },
+    { label: 'NASDAQ', color: '#3aa0ff', data: nasdaq }
+  ]);
+}
+
+let resizeTimer_ = null;
+window.addEventListener('resize', function () {
+  clearTimeout(resizeTimer_);
+  resizeTimer_ = setTimeout(function () {
+    if (lastHistoryData) renderChart(lastHistoryData);
+  }, 150);
+});
+
+function renderCalendar(cal) {
+  const el = document.getElementById('calendarList');
+  const list = cal.earnings || [];
+  if (!list.length) {
+    el.innerHTML = '<li class="empty">예정된 일정이 없습니다.</li>';
+    return;
+  }
+  el.innerHTML = list.map(function (e) {
+    return '<li><span class="cdate">' + (e.date || '') + '</span>' + (e.symbol || e.name || '') + '</li>';
+  }).join('');
+}
+
+function renderNews(newsItems) {
+  const el = document.getElementById('newsList');
+  const filtered = state.category === 'all'
+    ? newsItems
+    : newsItems.filter(function (n) { return n.category === state.category; });
+
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty">표시할 뉴스가 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(function (n) {
+    return '<div class="news-item">' +
+      '<a href="' + n.link + '" target="_blank" rel="noopener">' + n.title + '</a>' +
+      '<div class="meta">' + (n.pubDate || '') + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// ---------- 데이터 로드 ----------
+let allNewsCache = [];
+
+async function loadRates(force) {
+  try {
+    const params = force ? { nocache: 1 } : {};
+    const rates = isConfigured() ? await apiGet('rates', params) : mockRates();
+    renderCards(rates);
+  } catch (err) {
+    console.error(err);
+    renderCards(mockRates());
+  }
+}
+
+async function loadHistory(force) {
+  try {
+    const params = Object.assign({ range: state.range }, force ? { nocache: 1 } : {});
+    const history = isConfigured() ? await apiGet('history', params) : mockHistory();
+    renderChart(history);
+  } catch (err) {
+    console.error(err);
+    renderChart(mockHistory());
+  }
+}
+
+async function loadCalendar(force) {
+  try {
+    const params = force ? { nocache: 1 } : {};
+    const cal = isConfigured() ? await apiGet('calendar', params) : mockCalendar();
+    renderCalendar(cal);
+  } catch (err) {
+    console.error(err);
+    renderCalendar(mockCalendar());
+  }
+}
+
+async function loadNews(force) {
+  try {
+    // 실제 연동 시: 카테고리 5개를 각각 호출해 합치거나, action=news&category=all 로 한번에 받아오도록
+    // Code.gs 쪽 getNews를 확장해도 됩니다. 지금은 category별로 순차 호출합니다.
+    if (isConfigured()) {
+      const cats = ['world', 'domestic', 'politics_domestic', 'politics_intl'];
+      const extra = force ? { nocache: 1 } : {};
+      const results = await Promise.all(cats.map(function (c) { return apiGet('news', Object.assign({ category: c }, extra)); }));
+      const merged = results.flatMap(function (r) { return r.items || []; });
+      // 카테고리 순서대로 이어붙이면 "전체" 탭에서 뒤죽박죽으로 보이니,
+      // 실제 발행 시각 기준 최신순으로 다시 정렬한다.
+      merged.sort(function (a, b) { return new Date(b.pubDate) - new Date(a.pubDate); });
+      allNewsCache = merged;
+    } else {
+      allNewsCache = mockNews().items;
+    }
+  } catch (err) {
+    console.error(err);
+    allNewsCache = mockNews().items;
+  }
+  renderNews(allNewsCache);
+}
+
+function setupBannerCheck() {
+  document.getElementById('setupBanner').style.display = isConfigured() ? 'none' : 'block';
+}
+
+// ---------- 이벤트 ----------
+document.querySelectorAll('.range-btns button').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('.range-btns button').forEach(function (b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    state.range = btn.dataset.range;
+    loadHistory();
+  });
+});
+
+// ---------- 종목 검색 ----------
+function mockQuote(query) {
+  return {
+    query: query, symbol: '005930.KS', name: '삼성전자(목업)',
+    quote: { value: 71500, change: 800, changePct: 1.13, date: new Date().toISOString() }
+  };
+}
+
+async function searchQuote() {
+  const input = document.getElementById('quoteInput');
+  const resultEl = document.getElementById('quoteResult');
+  const query = input.value.trim();
+  if (!query) return;
+
+  resultEl.className = 'search-result show';
+  resultEl.innerHTML = '<div class="loading">조회 중…</div>';
+
+  try {
+    const data = isConfigured() ? await apiGet('quote', { symbol: query }) : mockQuote(query);
+    if (data.error || !data.quote || data.quote.error) {
+      throw new Error(data.error || (data.quote && data.quote.error) || '조회 실패');
+    }
+    const q = data.quote;
+    const cls = changeClass(q.changePct);
+    const titleLine = data.name ? (data.name + ' · ' + data.symbol.toUpperCase()) : data.symbol.toUpperCase();
+    resultEl.className = 'search-result show';
+    resultEl.innerHTML =
+      '<div class="sr-symbol">' + titleLine + '</div>' +
+      '<div class="sr-value">' + fmtNum(q.value, 2) + '</div>' +
+      '<div class="sr-change change ' + cls + '">' + changeArrow(q.changePct) + ' ' +
+        fmtNum(Math.abs(q.change), 2) + ' (' + fmtNum(Math.abs(q.changePct), 2) + '%)</div>';
+  } catch (err) {
+    resultEl.className = 'search-result show error';
+    resultEl.innerHTML = '조회에 실패했어요. 종목명이나 코드를 다시 확인해주세요 (예: 삼성전자, AAPL, 005930.KS). — ' + err.message;
+  }
+}
+
+document.getElementById('quoteBtn').addEventListener('click', searchQuote);
+document.getElementById('quoteInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') searchQuote();
+});
+
+document.querySelectorAll('#newsTags button').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('#newsTags button').forEach(function (b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    state.category = btn.dataset.cat;
+    renderNews(allNewsCache);
+  });
+});
+
+// ---------- 초기 로드 + 자동 갱신 ----------
+function loadAll() {
+  setupBannerCheck();
+  loadRates();
+  loadHistory();
+  loadCalendar();
+  loadNews();
+}
+
+// 백엔드(Code.gs)는 API 호출 한도를 아끼려고 지표를 15분씩 서버에서 캐시해둔다.
+// 그래서 그냥 새로고침(F5)만 하면 캐시된 값 그대로 보여서 "마지막 업데이트" 시각이
+// 안 바뀐 것처럼 보일 수 있다 — 버그가 아니라 의도된 동작. 진짜 최신 값을 지금 바로
+// 보고 싶을 때 쓰라고 nocache=1 로 캐시를 건너뛰는 수동 새로고침 버튼을 둔다.
+async function manualRefresh() {
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 새로고침 중…';
+  try {
+    await Promise.all([loadRates(true), loadHistory(true), loadCalendar(true), loadNews(true)]);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 새로고침';
+  }
+}
+document.getElementById('refreshBtn').addEventListener('click', manualRefresh);
+
+loadAll();
+setInterval(loadRates, 15 * 60 * 1000);   // 15분마다 지표 갱신
+setInterval(loadNews, 30 * 60 * 1000);    // 30분마다 뉴스 갱신
+</script>
+</body>
+</html>
