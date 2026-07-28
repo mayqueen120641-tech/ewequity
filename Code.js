@@ -21,6 +21,9 @@ function doGet(e) {
       case 'quote':
         result = getQuote((e.parameter && e.parameter.symbol) || '', noCache);
         break;
+      case 'quotes':
+        result = getQuotes((e.parameter && e.parameter.symbols) || '', noCache);
+        break;
       case 'briefing':
         result = getBriefing();
         break;
@@ -474,6 +477,54 @@ function getQuote(query, noCache) {
   const data = { query: clean, symbol: symbol, name: resolved ? resolved.name : null, quote: quote };
   cachePut_(cacheKey, data, 300); // 5분 캐시 (검색은 자주 바뀔 수 있어 짧게)
   return data;
+}
+
+// ---- 관심종목(워치리스트) 시세 일괄 조회 ----
+// 목록 자체는 브라우저 localStorage에 있다(서버에 두려면 공개 URL에 쓰기 엔드포인트를
+// 열어야 하는데, 웹앱이 ANYONE_ANONYMOUS라 URL을 아는 누구나 남의 목록을 바꿀 수 있다).
+// 백엔드는 "심볼 여러 개의 현재 시세"만 담당한다.
+var WATCHLIST_MAX_ = 20;
+
+function getQuotes(symbolsCsv, noCache) {
+  const symbols = String(symbolsCsv || '')
+    .split(',')
+    .map(function (s) { return s.trim(); })
+    .filter(function (s) { return s && s.length <= 40; })
+    .slice(0, WATCHLIST_MAX_);
+  if (!symbols.length) return { quotes: [] };
+
+  // 심볼을 그대로 캐시 키에 쓰면 20개일 때 250자 제한을 넘길 수 있어 해시로 줄인다.
+  const cacheKey = 'quotes_' + md5_(symbols.join(',').toLowerCase());
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  // 워치리스트에는 이미 확정된 티커만 들어오므로(검색으로 찾아서 담기 때문에)
+  // resolveSymbol_ 없이 곧바로 시세만 병렬로 받는다.
+  const jobs = symbols.map(function (s) { return { name: s, url: yahooChartUrl_(s) }; });
+  const responses = fetchJobsSafe_(jobs);
+
+  const quotes = jobs.map(function (j, i) {
+    try {
+      const res = responses[i];
+      if (!res) throw new Error('연결 오류');
+      const code = res.getResponseCode();
+      if (code >= 400) throw new Error('HTTP ' + code);
+      return { symbol: j.name, quote: parseYahooQuote_(JSON.parse(res.getContentText())) };
+    } catch (err) {
+      // 한 종목이 실패해도 나머지는 그대로 보여준다.
+      return { symbol: j.name, error: String(err) };
+    }
+  });
+
+  const data = { quotes: quotes };
+  cachePut_(cacheKey, data, 300); // 5분 캐시 (시세라 짧게)
+  return data;
+}
+
+function md5_(s) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, s)
+    .map(function (b) { return ((b & 0xFF) + 0x100).toString(16).slice(1); })
+    .join('');
 }
 
 // 회사명/키워드로 실제 티커 심볼을 찾아주는 검색.
