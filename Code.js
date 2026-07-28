@@ -494,26 +494,123 @@ function getYahooHistory_(symbol, range) {
   return points;
 }
 
-// ================= 3. 경제 캘린더 (기업 실적 발표일) =================
+// ================= 3. 경제 캘린더 (매크로 지표 발표일 + 주요 기업 실적) =================
+// 30일치를 통째로 캐시에 넣으면 GAS 캐시 값 용량 제한(100KB)을 넘어 통째로 에러가 났었음
+// -> 조회 기간을 14일로 줄이고, 꼭 필요한 필드만 남기고, 개수에도 상한을 둔다.
+var CALENDAR_DAYS_ = 14;
+
+// FRED가 제공하는 발표 일정은 300종이 넘고 대부분은 이 대시보드와 무관하다(지역별 통계,
+// 일간 금리 고시 등). 매크로 흐름을 볼 때 실제로 챙겨보는 것만 골라내고, 화면에 그대로 쓸
+// 수 있게 한국어 이름을 같이 붙인다. key는 FRED release_name의 **앞부분** 일치로 검사한다 —
+// 부분 일치로 하면 "Debt to Gross Domestic Product Ratios"(부채/GDP 비율) 같은 별개 통계가
+// "Gross Domestic Product"에 걸려 GDP 발표로 둔갑한다(실제로 그랬음).
+var FRED_MAJOR_RELEASES_ = [
+  ['Consumer Price Index', '미국 소비자물가지수(CPI)'],
+  ['Employment Situation', '미국 고용보고서'],
+  ['Gross Domestic Product', '미국 GDP'],
+  ['Personal Income and Outlays', '미국 개인소득·지출(PCE)'],
+  ['Producer Price Index', '미국 생산자물가지수(PPI)'],
+  ['Advance Monthly Sales for Retail', '미국 소매판매'],
+  ['Industrial Production', '미국 산업생산'],
+  ['Job Openings and Labor Turnover', '미국 구인·이직 보고서(JOLTS)'],
+  ['New Residential Construction', '미국 신규주택착공'],
+  ['Advance Report on Durable Goods', '미국 내구재 주문'],
+  ['H.6', '미국 통화량(M2)'],
+  ['Federal Open Market Committee', 'FOMC']
+];
+
+// 실적 캘린더에 띄울 종목. Finnhub는 미국 상장사 전체(하루 수백 건)를 돌려주는데 대부분
+// 이름도 모르는 소형주라, 시장 전체가 반응하는 대형주로만 좁힌다. 종목 자체는 자주 바뀌지
+// 않으니 여기만 가끔 손보면 되고, 발표일은 계속 자동으로 따라온다.
+var MAJOR_EARNINGS_SYMBOLS_ = [
+  'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'GOOG', 'AMZN', 'META', 'TSLA', 'AVGO', 'ORCL',
+  'AMD', 'INTC', 'MU', 'QCOM', 'TSM', 'ASML', 'ARM', 'SMCI', 'CRM', 'ADBE',
+  'NFLX', 'DIS', 'JPM', 'V', 'MA', 'BAC', 'GS', 'BRK.B', 'UNH', 'LLY',
+  'JNJ', 'XOM', 'CVX', 'WMT', 'COST', 'HD', 'PG', 'KO', 'PEP', 'BA',
+  'CSCO', 'PLTR', 'COIN', 'MSTR', 'UBER', 'ABNB', 'SHOP', 'PYPL'
+];
+
 function getCalendar(noCache) {
   const cached = noCache ? null : cacheGet_('calendar');
   if (cached) return cached;
 
-  const key = getProp_('FINNHUB_API_KEY');
+  const props = PropertiesService.getScriptProperties();
+  const fredKey = props.getProperty('FRED_API_KEY');
+  const finnhubKey = props.getProperty('FINNHUB_API_KEY');
   const today = new Date();
-  // 30일치를 통째로 캐시에 넣으면 GAS 캐시 값 용량 제한(100KB)을 넘어 통째로
-  // 에러가 났었음 -> 14일로 줄이고, 꼭 필요한 필드만 남기고, 개수도 상한을 둔다.
   const from = Utilities.formatDate(today, 'Asia/Seoul', 'yyyy-MM-dd');
-  const to = Utilities.formatDate(new Date(today.getTime() + 14 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyy-MM-dd');
-  const url = 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to + '&token=' + key;
-  const json = fetchJson_(url);
-  const raw = json.earningsCalendar || [];
-  const trimmed = raw.slice(0, 60).map(function (e) {
-    return { date: e.date, symbol: e.symbol, hour: e.hour };
+  const to = Utilities.formatDate(new Date(today.getTime() + CALENDAR_DAYS_ * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyy-MM-dd');
+
+  const jobs = [];
+  if (fredKey) {
+    jobs.push({ name: 'macro', url: fredReleaseDatesUrl_(fredKey, from, to), parse: parseFredReleases_ });
+  }
+  if (finnhubKey) {
+    jobs.push({
+      name: 'earnings',
+      url: 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to + '&token=' + finnhubKey,
+      parse: parseMajorEarnings_
+    });
+  }
+
+  const responses = fetchJobsSafe_(jobs);
+  const data = { macro: [], earnings: [], from: from, to: to };
+  jobs.forEach(function (j, i) {
+    try {
+      const res = responses[i];
+      if (!res) throw new Error('연결 오류');
+      const code = res.getResponseCode();
+      if (code >= 400) throw new Error('HTTP ' + code);
+      data[j.name] = j.parse(JSON.parse(res.getContentText()));
+    } catch (err) {
+      data[j.name + 'Error'] = String(err);
+    }
   });
-  const data = { earnings: trimmed };
+
   cachePut_('calendar', data, 21600); // 6시간 캐시 (실패해도 cachePut_ 내부에서 무시하도록 처리됨)
   return data;
+}
+
+// 예정된 발표일은 아직 데이터가 없는 상태라, include_release_dates_with_no_data=true를
+// 붙이지 않으면 미래 일정이 하나도 안 나온다.
+function fredReleaseDatesUrl_(apiKey, from, to) {
+  return 'https://api.stlouisfed.org/fred/releases/dates?api_key=' + apiKey +
+    '&file_type=json&realtime_start=' + from + '&realtime_end=' + to +
+    '&include_release_dates_with_no_data=true&sort_order=asc&limit=1000';
+}
+
+function parseFredReleases_(json) {
+  const rows = json.release_dates || [];
+  const out = [];
+  const seen = {};
+  rows.forEach(function (r) {
+    const label = majorReleaseLabel_(r.release_name);
+    if (!label) return;
+    const key = r.date + '|' + label;
+    if (seen[key]) return; // 같은 발표가 여러 건으로 쪼개져 오는 경우가 있어 중복 제거
+    seen[key] = true;
+    out.push({ date: r.date, name: label, source: r.release_name });
+  });
+  return out.slice(0, 40);
+}
+
+function majorReleaseLabel_(releaseName) {
+  const name = String(releaseName || '');
+  for (var i = 0; i < FRED_MAJOR_RELEASES_.length; i++) {
+    if (name.indexOf(FRED_MAJOR_RELEASES_[i][0]) === 0) return FRED_MAJOR_RELEASES_[i][1];
+  }
+  return null;
+}
+
+function parseMajorEarnings_(json) {
+  const raw = json.earningsCalendar || [];
+  const wanted = {};
+  MAJOR_EARNINGS_SYMBOLS_.forEach(function (s) { wanted[s] = true; });
+  return raw
+    .filter(function (e) { return wanted[String(e.symbol || '').toUpperCase()]; })
+    .map(function (e) { return { date: e.date, symbol: e.symbol, hour: e.hour || '' }; })
+    .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
+    .slice(0, 30);
 }
 
 // ================= 4. 경제 뉴스 피드 (네이버 뉴스 검색) =================

@@ -97,6 +97,13 @@
   .calendar-list li{padding:8px 0;border-bottom:1px solid var(--panel-border);}
   .calendar-list li:last-child{border-bottom:none;}
   .calendar-list .cdate{color:var(--accent);font-weight:600;margin-right:8px;}
+  /* 실적 발표 시각: bmo(장 시작 전) / amc(장 마감 후) */
+  .calendar-list .chour{color:var(--sub);font-size:11px;margin-left:6px;}
+  .cal-section-title{
+    font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--sub);
+    margin:14px 0 4px;padding-bottom:4px;border-bottom:1px solid var(--panel-border);
+  }
+  .cal-section-title:first-of-type{margin-top:0;}
 
   .news-tags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
   .news-tags button{
@@ -219,7 +226,12 @@
       <canvas id="historyChart"></canvas>
     </div>
     <div class="panel">
-      <h2>이번 달 경제 캘린더 (기업 실적발표)</h2>
+      <h2>경제 캘린더 (2주)</h2>
+      <div class="cal-section-title">지표 발표</div>
+      <ul class="calendar-list" id="macroList">
+        <li class="loading">불러오는 중…</li>
+      </ul>
+      <div class="cal-section-title">기업 실적</div>
       <ul class="calendar-list" id="calendarList">
         <li class="loading">불러오는 중…</li>
       </ul>
@@ -286,11 +298,18 @@ function mockHistory() {
   return { kospi, nasdaq };
 }
 function mockCalendar() {
-  return { earnings: [
-    { date: '2026-07-07', symbol: '삼성전자', hour: 'bmo' },
-    { date: '2026-07-10', symbol: 'SK하이닉스 ADR', hour: 'amc' },
-    { date: '2026-07-29', symbol: 'SK하이닉스', hour: 'bmo' }
-  ]};
+  return {
+    macro: [
+      { date: '2026-07-30', name: '미국 개인소득·지출(PCE)' },
+      { date: '2026-08-04', name: '미국 구인·이직 보고서(JOLTS)' },
+      { date: '2026-08-07', name: '미국 고용보고서' }
+    ],
+    earnings: [
+      { date: '2026-08-05', symbol: 'DIS', hour: 'amc' },
+      { date: '2026-08-06', symbol: 'ABNB', hour: 'amc' },
+      { date: '2026-08-11', symbol: 'CSCO', hour: 'amc' }
+    ]
+  };
 }
 function mockNews() {
   const all = [
@@ -513,14 +532,36 @@ window.addEventListener('resize', function () {
 });
 
 function renderCalendar(cal) {
-  const el = document.getElementById('calendarList');
-  const list = cal.earnings || [];
+  // 지표 발표(FRED)와 기업 실적(Finnhub)은 소스가 달라서 한쪽이 실패해도 다른 쪽은 그대로
+  // 보여준다. 각각 macroError / earningsError 로 실패 사유가 내려온다.
+  renderCalendarList(
+    document.getElementById('macroList'),
+    cal.macro || [],
+    cal.macroError,
+    function (m) { return m.name || ''; }
+  );
+  renderCalendarList(
+    document.getElementById('calendarList'),
+    cal.earnings || [],
+    cal.earningsError,
+    function (e) {
+      const hour = e.hour === 'bmo' ? '장전' : e.hour === 'amc' ? '장후' : '';
+      return (e.symbol || '') + (hour ? '<span class="chour">' + hour + '</span>' : '');
+    }
+  );
+}
+
+function renderCalendarList(el, list, error, labelOf) {
+  if (error) {
+    el.innerHTML = '<li class="empty">불러오지 못했습니다.</li>';
+    return;
+  }
   if (!list.length) {
     el.innerHTML = '<li class="empty">예정된 일정이 없습니다.</li>';
     return;
   }
-  el.innerHTML = list.map(function (e) {
-    return '<li><span class="cdate">' + (e.date || '') + '</span>' + (e.symbol || e.name || '') + '</li>';
+  el.innerHTML = list.map(function (item) {
+    return '<li><span class="cdate">' + (item.date || '') + '</span>' + labelOf(item) + '</li>';
   }).join('');
 }
 
