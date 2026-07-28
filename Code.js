@@ -40,8 +40,7 @@ function doGet(e) {
 function clearAllCaches() {
   const keys = [
     'rates', 'history_1M', 'history_3M', 'history_1Y', 'calendar',
-    'news_all', 'news_world', 'news_domestic', 'news_politics_domestic', 'news_politics_intl',
-    'ecos_down' // ECOS 차단 표시(30분). 이걸 지우면 다음 요청에서 ECOS를 다시 시도한다.
+    'news_all', 'news_world', 'news_domestic', 'news_politics_domestic', 'news_politics_intl'
   ];
   CacheService.getScriptCache().removeAll(keys);
   Logger.log('캐시 초기화 완료');
@@ -88,45 +87,23 @@ function getRates(noCache) {
   return data;
 }
 
-// ECOS가 GAS 서버에서 막혀있는 걸 한 번 확인하면, 이 시간 동안은 아예 시도하지 않고
-// 곧바로 폴백값(수동 기준금리 / Yahoo 환율)을 쓴다. ECOS가 막혔을 때는 에러가 바로
-// 나는 게 아니라 응답이 올 때까지 수십 초를 매달려 있어서, 매 요청마다 그 시간을
-// 물면 "첫 로딩이 느린" 문제가 그대로 남기 때문.
-var ECOS_DOWN_KEY_ = 'ecos_down';
-var ECOS_DOWN_SEC_ = 1800; // 30분
-
-// 지표 8종을 UrlFetchApp.fetchAll()로 한 번에 병렬 요청한다. 예전엔 8개를 순차로
-// fetch()해서(ECOS가 막혀 재시도가 붙으면 더 느려짐) 첫 로딩이 오래 걸렸는데, 병렬화하면
-// 전체 응답 시간이 "가장 느린 요청 1개" 수준으로 줄어든다.
-// usdkrw는 ECOS 성공 여부를 미리 알 수 없으니 Yahoo(KRW=X) 요청도 항상 같이 보내놓고,
-// ECOS가 실패했을 때는 순차로 재요청하는 대신 이미 도착해있는 그 응답을 바로 대신 쓴다.
+// 지표를 UrlFetchApp.fetchAll()로 한 번에 병렬 요청한다. 예전엔 하나씩 순차로 fetch()해서
+// 첫 로딩이 오래 걸렸는데, 병렬화하면 전체 응답 시간이 "가장 느린 요청 1개" 수준으로 줄어든다.
+//
+// ECOS(기준금리·환율)는 여기서 요청하지 않는다. GAS 서버가 차단당하면 에러가 바로 나는 게
+// 아니라 응답을 기다리며 ~50초를 매달려서, 사용자 요청 경로에 두면 그 시간을 그대로 물게 된다.
+// 대신 시간 기반 트리거가 refreshEcosCache()로 백그라운드에서 미리 받아 스크립트 속성에
+// 저장해두고, 여기서는 그 저장값만 읽는다(readEcosCache_). 저장값이 없거나 오래됐으면
+// 기준금리는 수동 입력값, 환율은 Yahoo(KRW=X)로 폴백한다.
 function fetchRatesParallel_() {
   const props = PropertiesService.getScriptProperties();
-  const ecosKey = props.getProperty('ECOS_API_KEY');
   const fredKey = props.getProperty('FRED_API_KEY');
-  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd');
-  const ecosStartLong = Utilities.formatDate(new Date(Date.now() - 120 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
-  const ecosStartShort = Utilities.formatDate(new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
-  const noKey = function (name) { return new Error('스크립트 속성에 ' + name + ' 가 설정되어 있지 않습니다.'); };
-
-  // 최근에 ECOS가 막힌 게 확인됐으면 이번엔 건너뛴다(위 ECOS_DOWN_KEY_ 설명 참고).
-  const ecosSkipped = !!cacheGet_(ECOS_DOWN_KEY_);
-  const useEcos = !!ecosKey && !ecosSkipped;
-  const ecosError = function () {
-    if (!ecosKey) return noKey('ECOS_API_KEY');
-    return new Error('ECOS 접속 불가 상태로 이번 요청은 건너뜀 - 폴백값 표시 중');
-  };
+  const noKey = function (name) { return { error: '스크립트 속성에 ' + name + ' 가 설정되어 있지 않습니다.' }; };
 
   const jobs = [
-    useEcos
-      ? { name: 'base_rate_kr', flaky: true, url: 'https://ecos.bok.or.kr/api/StatisticSearch/' + ecosKey + '/json/kr/1/10/722Y001/D/' + ecosStartLong + '/' + today + '/0101000', headers: BROWSER_LIKE_HEADERS_, parse: parseEcosBaseRate_ }
-      : { name: 'base_rate_kr', error: ecosError() },
     fredKey
       ? { name: 'base_rate_us', url: fredSeriesUrl_('FEDFUNDS', fredKey), parse: parseFred_ }
       : { name: 'base_rate_us', error: noKey('FRED_API_KEY') },
-    useEcos
-      ? { name: 'usdkrw', flaky: true, url: 'https://ecos.bok.or.kr/api/StatisticSearch/' + ecosKey + '/json/kr/1/10/731Y001/D/' + ecosStartShort + '/' + today + '/0000001', headers: BROWSER_LIKE_HEADERS_, parse: parseEcosUsdKrw_ }
-      : { name: 'usdkrw', error: ecosError() },
     { name: 'usdkrw_fallback', url: yahooChartUrl_('KRW=X'), parse: parseYahooQuote_ },
     fredKey
       ? { name: 'wti', url: fredSeriesUrl_('DCOILWTICO', fredKey), parse: parseFred_ }
@@ -138,19 +115,15 @@ function fetchRatesParallel_() {
   ];
 
   const toFetch = jobs.filter(function (j) { return !j.error; });
-  const fetched = fetchJobsSafe_(toFetch);
-
-  // 배치가 통째로 죽었다는 건 불안정한 요청(ECOS)이 연결 단계에서 막혔다는 뜻.
-  // 다음 요청부터는 아예 건너뛰도록 표시해둔다.
-  if (fetched.flakyFailed) cachePut_(ECOS_DOWN_KEY_, 1, ECOS_DOWN_SEC_);
+  const responses = fetchJobsSafe_(toFetch);
 
   const results = {};
   jobs.forEach(function (j) {
-    if (j.error) results[j.name] = { error: String(j.error) };
+    if (j.error) results[j.name] = j.error;
   });
   toFetch.forEach(function (j, i) {
     try {
-      const res = fetched.responses[i];
+      const res = responses[i];
       if (!res) throw new Error('요청 실패(연결 오류): ' + j.url);
       const code = res.getResponseCode();
       if (code >= 400) throw new Error('요청 실패(' + code + '): ' + j.url);
@@ -160,21 +133,23 @@ function fetchRatesParallel_() {
     }
   });
 
-  // base_rate_kr: ECOS 접속이 막혀있을 때 대비해, 스크립트 속성에
-  // BASE_RATE_KR_MANUAL 값을 넣어두면(금통위 발표 때만 가끔 바뀌는 값이라 수동
-  // 관리로도 충분함) 그 값을 대신 보여준다.
-  if (results.base_rate_kr.error) {
+  const ecos = readEcosCache_();
+
+  // base_rate_kr: 트리거가 받아둔 ECOS 값 → 없으면 스크립트 속성의 수동 입력값
+  // (금통위 발표 때만 가끔 바뀌는 값이라 수동 관리로도 충분함) 순으로 사용한다.
+  let baseRateKr = ecos.base_rate_kr;
+  if (!baseRateKr) {
     const manual = props.getProperty('BASE_RATE_KR_MANUAL');
-    if (manual) {
-      results.base_rate_kr = { value: parseFloat(manual), date: 'manual', note: 'ECOS 연동 실패 - 수동 입력값 표시 중' };
-    }
+    baseRateKr = manual
+      ? { value: parseFloat(manual), date: 'manual', note: 'ECOS 값 없음 - 수동 입력값 표시 중' }
+      : { error: 'ECOS 기준금리 값이 아직 없습니다. setupEcosTrigger()를 실행했는지 확인하세요.' };
   }
 
-  // usdkrw: ECOS가 막혀있으면 이미 병렬로 받아둔 Yahoo(KRW=X) 결과로 대체.
-  const usdkrw = results.usdkrw.error ? results.usdkrw_fallback : results.usdkrw;
+  // usdkrw: 트리거가 받아둔 ECOS 값 → 없으면 방금 병렬로 받아둔 Yahoo(KRW=X) 결과.
+  const usdkrw = ecos.usdkrw || results.usdkrw_fallback;
 
   return {
-    base_rate_kr: results.base_rate_kr,
+    base_rate_kr: baseRateKr,
     base_rate_us: results.base_rate_us,
     usdkrw: usdkrw,
     wti: results.wti,
@@ -188,34 +163,106 @@ function fetchRatesParallel_() {
 // UrlFetchApp.fetchAll()은 배치 안의 요청 하나가 "Address unavailable" 같은 연결 레벨
 // 오류를 내면 그 요청만 실패하는 게 아니라 fetchAll() 호출 자체가 예외를 던지며 배치 전체
 // 응답을 잃어버린다(HTTP 4xx/5xx는 muteHttpExceptions로 막히지만 연결 실패는 안 막힘).
-// 그래서 배치가 죽으면 `flaky`로 표시된 요청(= ECOS)만 빼고 나머지를 한 번 더 병렬로
-// 요청한다. 하나씩 순차 재시도하면 폴백 경로에서 오히려 더 느려지므로 재시도도 병렬로.
+// 그래서 배치가 통째로 죽으면 하나씩 개별 요청으로 재시도해 성공/실패를 요청 단위로 격리한다.
+// (오래 매달리는 ECOS는 이 배치에 없으므로 순차 재시도로도 크게 느려지지 않는다.)
 // jobs와 같은 길이의 배열을 돌려주며, 못 받은 자리는 null이다.
 function fetchJobsSafe_(jobs) {
-  const toRequest = function (j) {
-    return Object.assign({ url: j.url, muteHttpExceptions: true }, j.headers ? { headers: j.headers } : {});
+  const toParams = function (j) {
+    return Object.assign({ muteHttpExceptions: true }, j.headers ? { headers: j.headers } : {});
   };
-  if (!jobs.length) return { responses: [], flakyFailed: false };
+  if (!jobs.length) return [];
 
   try {
-    return { responses: UrlFetchApp.fetchAll(jobs.map(toRequest)), flakyFailed: false };
+    return UrlFetchApp.fetchAll(jobs.map(function (j) {
+      return Object.assign({ url: j.url }, toParams(j));
+    }));
   } catch (err) {
-    const responses = jobs.map(function () { return null; });
-    const stableIdx = [];
-    const stable = [];
-    jobs.forEach(function (j, i) {
-      if (!j.flaky) { stableIdx.push(i); stable.push(toRequest(j)); }
-    });
-    if (stable.length) {
+    return jobs.map(function (j) {
       try {
-        const got = UrlFetchApp.fetchAll(stable);
-        stableIdx.forEach(function (idx, k) { responses[idx] = got[k]; });
+        return UrlFetchApp.fetch(j.url, toParams(j));
       } catch (err2) {
-        // 두 번째 배치까지 죽으면 전부 null로 두고, 각 지표가 개별 에러로 표시된다.
+        return null;
       }
+    });
+  }
+}
+
+// ================= ECOS 백그라운드 갱신 (시간 기반 트리거) =================
+// ECOS는 GAS 서버에서 차단당하는 일이 잦고, 그때 응답까지 ~50초를 매달린다. 그래서
+// 사용자 요청(doGet) 경로에서 빼고, 트리거가 주기적으로 미리 받아 스크립트 속성에
+// 넣어두는 방식으로 분리했다. 실패하면 직전에 저장해둔 값이 그대로 남는다.
+var ECOS_CACHE_PROP_ = 'ECOS_CACHE_V1';
+var ECOS_MAX_AGE_MS_ = 26 * 60 * 60 * 1000; // 26시간 넘게 갱신 안 됐으면 폐기하고 폴백 사용
+
+/**
+ * 이 프로젝트에서 딱 한 번만 실행하면 되는 설치 함수. Apps Script 편집기 상단의 함수
+ * 드롭다운에서 골라 ▶ 실행하면, 30분마다 ECOS 값을 받아오는 트리거가 등록된다.
+ * (여러 번 눌러도 기존 트리거를 지우고 다시 만들기 때문에 중복 생성되지 않는다.)
+ */
+function setupEcosTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'refreshEcosCache') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('refreshEcosCache').timeBased().everyMinutes(30).create();
+  refreshEcosCache(); // 30분 기다리지 않도록 지금 한 번 채워둔다
+  Logger.log('ECOS 트리거 등록 완료 (30분 주기). 현재 저장값: ' + PropertiesService.getScriptProperties().getProperty(ECOS_CACHE_PROP_));
+}
+
+/** 트리거가 호출하는 함수. 직접 실행해도 된다(값을 즉시 갱신하고 싶을 때). */
+function refreshEcosCache() {
+  const props = PropertiesService.getScriptProperties();
+  const key = props.getProperty('ECOS_API_KEY');
+  if (!key) {
+    console.log('refreshEcosCache: ECOS_API_KEY 미설정 - 건너뜀');
+    return;
+  }
+
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd');
+  const startLong = Utilities.formatDate(new Date(Date.now() - 120 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
+  const startShort = Utilities.formatDate(new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
+  const jobs = [
+    { name: 'base_rate_kr', url: ecosUrl_(key, '722Y001', startLong, today, '0101000'), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosBaseRate_ },
+    { name: 'usdkrw', url: ecosUrl_(key, '731Y001', startShort, today, '0000001'), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosUsdKrw_ }
+  ];
+  const responses = fetchJobsSafe_(jobs);
+
+  // 둘 중 하나만 성공했으면 그것만 갱신하고 나머지는 기존 값을 유지한다.
+  const stored = readEcosCache_();
+  let updated = 0;
+  jobs.forEach(function (j, i) {
+    try {
+      const res = responses[i];
+      if (!res) throw new Error('연결 오류');
+      const code = res.getResponseCode();
+      if (code >= 400) throw new Error('HTTP ' + code);
+      stored[j.name] = j.parse(JSON.parse(res.getContentText()));
+      updated++;
+    } catch (err) {
+      console.log('refreshEcosCache: ' + j.name + ' 실패(기존 값 유지) - ' + err);
     }
-    const hadFlaky = jobs.some(function (j) { return j.flaky; });
-    return { responses: responses, flakyFailed: hadFlaky };
+  });
+
+  if (!updated) return; // 전부 실패 -> 저장 시각을 갱신하지 않아 기존 값이 자연히 만료된다
+  stored.at = new Date().toISOString();
+  props.setProperty(ECOS_CACHE_PROP_, JSON.stringify(stored));
+  console.log('refreshEcosCache: ' + updated + '건 갱신 완료');
+}
+
+function ecosUrl_(key, statCode, from, to, itemCode) {
+  return 'https://ecos.bok.or.kr/api/StatisticSearch/' + key +
+    '/json/kr/1/10/' + statCode + '/D/' + from + '/' + to + '/' + itemCode;
+}
+
+// 트리거가 저장해둔 ECOS 값을 읽는다. 너무 오래된 값은 쓰지 않고 폴백에 맡긴다.
+function readEcosCache_() {
+  const raw = PropertiesService.getScriptProperties().getProperty(ECOS_CACHE_PROP_);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.at && (Date.now() - new Date(parsed.at).getTime()) > ECOS_MAX_AGE_MS_) return {};
+    return parsed;
+  } catch (err) {
+    return {};
   }
 }
 
