@@ -228,7 +228,7 @@ function refreshEcosCache() {
 
   // 둘 중 하나만 성공했으면 그것만 갱신하고 나머지는 기존 값을 유지한다.
   const stored = readEcosCache_();
-  let updated = 0;
+  const updated = [];
   jobs.forEach(function (j, i) {
     try {
       const res = responses[i];
@@ -236,16 +236,25 @@ function refreshEcosCache() {
       const code = res.getResponseCode();
       if (code >= 400) throw new Error('HTTP ' + code);
       stored[j.name] = j.parse(JSON.parse(res.getContentText()));
-      updated++;
+      updated.push(j.name);
     } catch (err) {
       console.log('refreshEcosCache: ' + j.name + ' 실패(기존 값 유지) - ' + err);
     }
   });
 
-  if (!updated) return; // 전부 실패 -> 저장 시각을 갱신하지 않아 기존 값이 자연히 만료된다
+  if (!updated.length) return; // 전부 실패 -> 저장 시각을 갱신하지 않아 기존 값이 자연히 만료된다
   stored.at = new Date().toISOString();
   props.setProperty(ECOS_CACHE_PROP_, JSON.stringify(stored));
-  console.log('refreshEcosCache: ' + updated + '건 갱신 완료');
+
+  // 기준금리를 새로 받았으면 수동 폴백값(BASE_RATE_KR_MANUAL)도 같이 덮어쓴다.
+  // 이 값은 ECOS 저장분이 26시간 넘게 낡았을 때 쓰이는 최후 폴백인데, 손으로 관리하면
+  // 금통위 발표 때 갱신하는 걸 잊어버려 틀린 금리가 표시된다(실제로 2.75로 방치돼 있었음).
+  // 성공할 때마다 최신값으로 자동 동기화해 그 사고를 막는다.
+  if (updated.indexOf('base_rate_kr') !== -1 && isFinite(stored.base_rate_kr.value)) {
+    props.setProperty('BASE_RATE_KR_MANUAL', String(stored.base_rate_kr.value));
+  }
+
+  console.log('refreshEcosCache: ' + updated.join(', ') + ' 갱신 완료');
 }
 
 function ecosUrl_(key, statCode, from, to, itemCode) {

@@ -43,6 +43,8 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
   그 저장값만 읽는다. 값이 없거나 26시간(`ECOS_MAX_AGE_MS_`) 넘게 낡았으면 기준금리는
   `BASE_RATE_KR_MANUAL`, 환율은 Yahoo(`KRW=X`)로 폴백. 트리거 설치는 Apps Script 편집기에서
   `setupEcosTrigger()`를 한 번 실행(중복 실행해도 안전).
+  `BASE_RATE_KR_MANUAL`은 손으로 관리하지 말 것 — ECOS 갱신에 성공할 때마다
+  `refreshEcosCache()`가 최신값으로 자동으로 덮어쓴다(방치돼 낡는 사고를 막기 위함).
 - **`UrlFetchApp.fetchAll()`의 함정**: `muteHttpExceptions`는 HTTP 4xx/5xx만 막아준다.
   "Address unavailable" 같은 **연결 레벨 오류가 배치에 하나라도 있으면 fetchAll 호출 자체가
   예외를 던져 배치 전체 응답을 잃는다**. `fetchJobsSafe_()`가 배치 실패 시 개별 요청으로
@@ -65,8 +67,8 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
 
 1. ~~**지표 로딩 속도 개선**~~ (2026-07-28 완료) — 지표를 `fetchAll()` 병렬 요청으로 전환하고
    ECOS는 트리거 백그라운드 갱신으로 분리. 실측 **2~3초**로 안정(50초 튐 없음).
-   → 남은 할 일: 편집기에서 `setupEcosTrigger()` 1회 실행, `BASE_RATE_KR_MANUAL` 값 갱신
-   (현재 2.75로 저장돼 있는데 ECOS 실제값은 2.50 / 2026-04-08 기준이라 낡음).
+   → 남은 할 일: 편집기에서 `setupEcosTrigger()` 1회 실행(트리거 생성 권한 승인 필요라
+   clasp로는 불가). 실행하면 `BASE_RATE_KR_MANUAL`도 자동으로 최신값으로 맞춰진다.
 2. **경제 캘린더 실데이터 교체** — Finnhub 무료플랜이 샘플데이터를 반환. 소스 교체 또는
    관심 종목 수기 관리 방식 검토.
 3. **뉴스 "중요도순" 정렬** — AI 자동 브리핑 기능과 함께 로드맵 단계에서 처리 예정.
