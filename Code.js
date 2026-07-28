@@ -495,9 +495,11 @@ function getYahooHistory_(symbol, range) {
 }
 
 // ================= 3. 경제 캘린더 (매크로 지표 발표일 + 주요 기업 실적) =================
-// 30일치를 통째로 캐시에 넣으면 GAS 캐시 값 용량 제한(100KB)을 넘어 통째로 에러가 났었음
-// -> 조회 기간을 14일로 줄이고, 꼭 필요한 필드만 남기고, 개수에도 상한을 둔다.
-var CALENDAR_DAYS_ = 14;
+// 화면이 달력(월 단위) 형태라 이번 달 1일부터 다음 달 말일까지를 한 번에 받아둔다.
+// 예전에 30일치를 통째로 캐시에 넣었다가 GAS 캐시 값 용량 제한(100KB)을 넘겨 응답 전체가
+// 에러났던 적이 있는데, 지금은 주요 발표/대형주만 걸러내서 담기 때문에(두 달치 합쳐도
+// 100건 안팎) 여유가 있다. 그래도 필드는 최소한만 남기고 개수 상한도 유지한다.
+var CALENDAR_MONTHS_AHEAD_ = 1;
 
 // FRED가 제공하는 발표 일정은 300종이 넘고 대부분은 이 대시보드와 무관하다(지역별 통계,
 // 일간 금리 고시 등). 매크로 흐름을 볼 때 실제로 챙겨보는 것만 골라내고, 화면에 그대로 쓸
@@ -537,19 +539,22 @@ function getCalendar(noCache) {
   const props = PropertiesService.getScriptProperties();
   const fredKey = props.getProperty('FRED_API_KEY');
   const finnhubKey = props.getProperty('FINNHUB_API_KEY');
+  // 이번 달 1일 ~ (이번 달 + CALENDAR_MONTHS_AHEAD_)의 말일.
+  // Date의 day=0은 "그 전달의 마지막 날"이라 말일 계산에 그대로 쓸 수 있다.
   const today = new Date();
-  const from = Utilities.formatDate(today, 'Asia/Seoul', 'yyyy-MM-dd');
-  const to = Utilities.formatDate(new Date(today.getTime() + CALENDAR_DAYS_ * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyy-MM-dd');
+  const first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const last = new Date(today.getFullYear(), today.getMonth() + CALENDAR_MONTHS_AHEAD_ + 1, 0);
+  const from = Utilities.formatDate(first, 'Asia/Seoul', 'yyyy-MM-dd');
+  const to = Utilities.formatDate(last, 'Asia/Seoul', 'yyyy-MM-dd');
 
   const jobs = [];
   if (fredKey) {
-    jobs.push({ name: 'macro', url: fredReleaseDatesUrl_(fredKey, from, to), parse: parseFredReleases_ });
+    jobs.push({ name: 'macro', url: fredReleaseDatesUrl_(fredKey, from, to, 0) });
   }
   if (finnhubKey) {
     jobs.push({
       name: 'earnings',
-      url: 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to + '&token=' + finnhubKey,
-      parse: parseMajorEarnings_
+      url: 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to + '&token=' + finnhubKey
     });
   }
 
@@ -561,7 +566,10 @@ function getCalendar(noCache) {
       if (!res) throw new Error('연결 오류');
       const code = res.getResponseCode();
       if (code >= 400) throw new Error('HTTP ' + code);
-      data[j.name] = j.parse(JSON.parse(res.getContentText()));
+      const json = JSON.parse(res.getContentText());
+      data[j.name] = j.name === 'macro'
+        ? parseFredReleases_(collectFredPages_(fredKey, from, to, json))
+        : parseMajorEarnings_(json);
     } catch (err) {
       data[j.name + 'Error'] = String(err);
     }
@@ -571,16 +579,46 @@ function getCalendar(noCache) {
   return data;
 }
 
-// 예정된 발표일은 아직 데이터가 없는 상태라, include_release_dates_with_no_data=true를
-// 붙이지 않으면 미래 일정이 하나도 안 나온다.
-function fredReleaseDatesUrl_(apiKey, from, to) {
-  return 'https://api.stlouisfed.org/fred/releases/dates?api_key=' + apiKey +
-    '&file_type=json&realtime_start=' + from + '&realtime_end=' + to +
-    '&include_release_dates_with_no_data=true&sort_order=asc&limit=1000';
+// FRED는 특정 통계가 아니라 "모든 발표 일정"을 돌려주기 때문에(일간 금리 고시처럼 매일
+// 나오는 것도 전부 포함) 두 달치를 요청하면 한 페이지 한도(1000건)를 넘긴다. 그대로 두면
+// 날짜 오름차순으로 앞부분만 남아 뒷달 일정이 통째로 사라진다(실제로 8월이 1건만 잡혔음).
+// 첫 페이지의 count를 보고 남은 페이지를 한 번에 병렬로 받아 이어붙인다.
+var FRED_PAGE_ = 1000;
+
+function collectFredPages_(apiKey, from, to, firstPage) {
+  const rows = (firstPage.release_dates || []).slice();
+  const count = firstPage.count || rows.length;
+  if (count <= rows.length) return rows;
+
+  const jobs = [];
+  for (var offset = FRED_PAGE_; offset < count && jobs.length < 8; offset += FRED_PAGE_) {
+    jobs.push({ url: fredReleaseDatesUrl_(apiKey, from, to, offset) });
+  }
+  fetchJobsSafe_(jobs).forEach(function (res) {
+    try {
+      if (!res || res.getResponseCode() >= 400) return;
+      const more = JSON.parse(res.getContentText()).release_dates || [];
+      rows.push.apply(rows, more);
+    } catch (err) {
+      // 이 페이지는 건너뛴다 — 일부가 빠져도 나머지 일정은 그대로 보여준다.
+    }
+  });
+  return rows;
 }
 
-function parseFredReleases_(json) {
-  const rows = json.release_dates || [];
+// 예정된 발표일은 아직 데이터가 없는 상태라, include_release_dates_with_no_data=true를
+// 붙이지 않으면 미래 일정이 하나도 안 나온다.
+function fredReleaseDatesUrl_(apiKey, from, to, offset) {
+  return 'https://api.stlouisfed.org/fred/releases/dates?api_key=' + apiKey +
+    '&file_type=json&realtime_start=' + from + '&realtime_end=' + to +
+    '&include_release_dates_with_no_data=true&sort_order=asc' +
+    '&limit=' + FRED_PAGE_ + '&offset=' + (offset || 0);
+}
+
+// 인자는 collectFredPages_가 여러 페이지를 이어붙인 release_dates 행 배열이다
+// (응답 객체가 아니라 배열임에 주의 — 예전에 json.release_dates를 꺼내려다 항상 빈
+// 배열이 나온 적이 있다).
+function parseFredReleases_(rows) {
   const out = [];
   const seen = {};
   rows.forEach(function (r) {
@@ -591,7 +629,7 @@ function parseFredReleases_(json) {
     seen[key] = true;
     out.push({ date: r.date, name: label, source: r.release_name });
   });
-  return out.slice(0, 40);
+  return out.slice(0, 80);
 }
 
 function majorReleaseLabel_(releaseName) {
@@ -610,7 +648,7 @@ function parseMajorEarnings_(json) {
     .filter(function (e) { return wanted[String(e.symbol || '').toUpperCase()]; })
     .map(function (e) { return { date: e.date, symbol: e.symbol, hour: e.hour || '' }; })
     .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
-    .slice(0, 30);
+    .slice(0, 80);
 }
 
 // ================= 4. 경제 뉴스 피드 (네이버 뉴스 검색) =================

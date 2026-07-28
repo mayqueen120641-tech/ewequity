@@ -93,17 +93,68 @@
   }
   .range-btns button.active{background:var(--accent);color:#1a0e05;border-color:var(--accent);font-weight:600;}
 
-  .calendar-list{list-style:none;margin:0;padding:0;font-size:13px;}
-  .calendar-list li{padding:8px 0;border-bottom:1px solid var(--panel-border);}
-  .calendar-list li:last-child{border-bottom:none;}
-  .calendar-list .cdate{color:var(--accent);font-weight:600;margin-right:8px;}
-  /* 실적 발표 시각: bmo(장 시작 전) / amc(장 마감 후) */
-  .calendar-list .chour{color:var(--sub);font-size:11px;margin-left:6px;}
-  .cal-section-title{
-    font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--sub);
-    margin:14px 0 4px;padding-bottom:4px;border-bottom:1px solid var(--panel-border);
+  /* ---------- 달력 ---------- */
+  .cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+  .cal-title{font-size:14px;font-weight:600;}
+  .cal-nav{display:flex;gap:6px;}
+  .cal-nav button{
+    width:26px;height:26px;line-height:1;padding:0;
+    background:#0d1729;border:1px solid var(--panel-border);color:var(--sub);
+    border-radius:7px;cursor:pointer;font-size:13px;
+    transition:background .12s ease,color .12s ease;
   }
-  .cal-section-title:first-of-type{margin-top:0;}
+  .cal-nav button:hover{background:#13213b;color:var(--text);}
+  .cal-nav button:disabled{opacity:.35;cursor:default;}
+
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+  .cal-dow{
+    text-align:center;font-size:11px;color:var(--sub);
+    padding-bottom:5px;letter-spacing:.03em;
+  }
+  .cal-dow.sun{color:#e06a6a;}
+  .cal-dow.sat{color:#6a95e0;}
+
+  /* 칸을 정사각형(aspect-ratio)으로 두면 패널이 넓어질 때 칸이 같이 커져서 달력이
+     화면 하나를 다 잡아먹는다(폭이 좁은 우측 칼럼에선 멀쩡해 보여도 좁은 화면에서
+     패널이 전체 너비가 되면 94px짜리 칸이 된다). 높이는 고정폭으로 묶어둔다. */
+  .cal-day{
+    position:relative;min-width:0;min-height:40px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    background:transparent;border:1px solid transparent;border-radius:8px;
+    color:var(--text);font-size:12px;font-family:inherit;
+    cursor:pointer;padding:0;
+    transition:background .12s ease,border-color .12s ease;
+  }
+  .cal-day:hover:not(.blank){background:#1a2740;}
+  .cal-day.blank{cursor:default;}
+  .cal-day.muted{color:#4d5b73;}
+  .cal-day.today{border-color:var(--accent);font-weight:700;}
+  .cal-day.selected{background:var(--accent);color:#1a0e05;font-weight:700;}
+  .cal-day.selected .cal-dot{background:#1a0e05;}
+
+  /* 일정이 있는 날 아래 찍히는 점. 종류별 색: 지표=주황, 실적=파랑 */
+  .cal-dots{display:flex;gap:3px;height:5px;align-items:center;}
+  .cal-dot{display:inline-block;flex:0 0 auto;width:5px;height:5px;border-radius:50%;}
+  .cal-dot.macro{background:var(--accent);}
+  .cal-dot.earn{background:var(--accent2);}
+
+  .cal-detail{margin-top:14px;border-top:1px solid var(--panel-border);padding-top:12px;}
+  .cal-detail-date{font-size:13px;font-weight:600;margin-bottom:8px;}
+  .cal-detail ul{list-style:none;margin:0;padding:0;font-size:13px;}
+  .cal-detail li{display:flex;align-items:baseline;gap:8px;padding:6px 0;}
+  .cal-detail li + li{border-top:1px solid var(--panel-border);}
+  .cal-tag{
+    flex:0 0 auto;font-size:10px;padding:2px 6px;border-radius:5px;
+    border:1px solid currentColor;line-height:1.4;
+  }
+  .cal-tag.macro{color:var(--accent);}
+  .cal-tag.earn{color:var(--accent2);}
+  /* 실적 발표 시각: bmo(장 시작 전) / amc(장 마감 후) */
+  .cal-hour{color:var(--sub);font-size:11px;}
+  .cal-detail .empty{color:var(--sub);font-size:12px;padding:6px 0;}
+
+  .cal-legend{display:flex;gap:14px;margin-top:10px;font-size:11px;color:var(--sub);}
+  .cal-legend span{display:flex;align-items:center;gap:5px;}
 
   .news-tags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
   .news-tags button{
@@ -226,15 +277,20 @@
       <canvas id="historyChart"></canvas>
     </div>
     <div class="panel">
-      <h2>경제 캘린더 (2주)</h2>
-      <div class="cal-section-title">지표 발표</div>
-      <ul class="calendar-list" id="macroList">
-        <li class="loading">불러오는 중…</li>
-      </ul>
-      <div class="cal-section-title">기업 실적</div>
-      <ul class="calendar-list" id="calendarList">
-        <li class="loading">불러오는 중…</li>
-      </ul>
+      <h2>경제 캘린더</h2>
+      <div class="cal-head">
+        <div class="cal-title" id="calTitle">불러오는 중…</div>
+        <div class="cal-nav">
+          <button type="button" id="calPrev" aria-label="이전 달">‹</button>
+          <button type="button" id="calNext" aria-label="다음 달">›</button>
+        </div>
+      </div>
+      <div class="cal-grid" id="calGrid"></div>
+      <div class="cal-legend">
+        <span><i class="cal-dot macro"></i>지표 발표</span>
+        <span><i class="cal-dot earn"></i>기업 실적</span>
+      </div>
+      <div class="cal-detail" id="calDetail"></div>
     </div>
   </section>
 
@@ -298,16 +354,26 @@ function mockHistory() {
   return { kospi, nasdaq };
 }
 function mockCalendar() {
+  // 달력 뷰가 오늘 기준으로 그려지므로, 목업도 오늘에서 며칠 뒤로 만들어야 화면에 보인다.
+  const today = new Date();
+  const plus = function (n) {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + n);
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  };
+  const first = new Date(today.getFullYear(), today.getMonth(), 1);
+  const last = new Date(today.getFullYear(), today.getMonth() + 2, 0);
   return {
+    from: ymd_(first),
+    to: ymd_(last),
     macro: [
-      { date: '2026-07-30', name: '미국 개인소득·지출(PCE)' },
-      { date: '2026-08-04', name: '미국 구인·이직 보고서(JOLTS)' },
-      { date: '2026-08-07', name: '미국 고용보고서' }
+      { date: plus(2), name: '미국 개인소득·지출(PCE)' },
+      { date: plus(7), name: '미국 구인·이직 보고서(JOLTS)' },
+      { date: plus(10), name: '미국 고용보고서' }
     ],
     earnings: [
-      { date: '2026-08-05', symbol: 'DIS', hour: 'amc' },
-      { date: '2026-08-06', symbol: 'ABNB', hour: 'amc' },
-      { date: '2026-08-11', symbol: 'CSCO', hour: 'amc' }
+      { date: plus(8), symbol: 'DIS', hour: 'amc' },
+      { date: plus(9), symbol: 'ABNB', hour: 'amc' },
+      { date: plus(14), symbol: 'CSCO', hour: 'amc' }
     ]
   };
 }
@@ -531,39 +597,160 @@ window.addEventListener('resize', function () {
   }, 150);
 });
 
+// ---------- 경제 캘린더 (달력 뷰) ----------
+const DOW_ = ['일', '월', '화', '수', '목', '금', '토'];
+const calState = {
+  events: {},      // 'YYYY-MM-DD' -> [{type, label, hour}]
+  month: null,     // 지금 보고 있는 달 (그 달 1일)
+  selected: null,  // 선택된 날짜 'YYYY-MM-DD'
+  minMonth: null,  // 데이터를 받아온 범위의 첫 달 / 마지막 달 (이 밖으로는 이동 불가)
+  maxMonth: null,
+  failed: false
+};
+
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+function ymd_(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+// 'YYYY-MM-DD'를 new Date()에 그대로 넣으면 UTC로 해석돼 하루씩 밀린다. 직접 쪼개서 만든다.
+function parseYmd_(s) {
+  const p = String(s || '').split('-');
+  return new Date(+p[0], +p[1] - 1, +p[2]);
+}
+function monthOf_(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+function esc_(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function renderCalendar(cal) {
   // 지표 발표(FRED)와 기업 실적(Finnhub)은 소스가 달라서 한쪽이 실패해도 다른 쪽은 그대로
   // 보여준다. 각각 macroError / earningsError 로 실패 사유가 내려온다.
-  renderCalendarList(
-    document.getElementById('macroList'),
-    cal.macro || [],
-    cal.macroError,
-    function (m) { return m.name || ''; }
-  );
-  renderCalendarList(
-    document.getElementById('calendarList'),
-    cal.earnings || [],
-    cal.earningsError,
-    function (e) {
-      const hour = e.hour === 'bmo' ? '장전' : e.hour === 'amc' ? '장후' : '';
-      return (e.symbol || '') + (hour ? '<span class="chour">' + hour + '</span>' : '');
-    }
-  );
+  const events = {};
+  const push = function (date, item) {
+    if (!date) return;
+    (events[date] = events[date] || []).push(item);
+  };
+  (cal.macro || []).forEach(function (m) {
+    push(m.date, { type: 'macro', label: m.name || '' });
+  });
+  (cal.earnings || []).forEach(function (e) {
+    push(e.date, { type: 'earn', label: e.symbol || '', hour: e.hour || '' });
+  });
+  // 같은 날 안에서는 지표를 먼저, 그 다음 실적을 보여준다.
+  Object.keys(events).forEach(function (k) {
+    events[k].sort(function (a, b) { return a.type === b.type ? 0 : a.type === 'macro' ? -1 : 1; });
+  });
+
+  calState.events = events;
+  calState.failed = !!(cal.macroError && cal.earningsError);
+
+  const today = new Date();
+  calState.minMonth = monthOf_(cal.from ? parseYmd_(cal.from) : today);
+  calState.maxMonth = monthOf_(cal.to ? parseYmd_(cal.to) : today);
+  calState.month = monthOf_(today);
+  calState.selected = ymd_(today);
+
+  renderCalendarMonth();
 }
 
-function renderCalendarList(el, list, error, labelOf) {
-  if (error) {
-    el.innerHTML = '<li class="empty">불러오지 못했습니다.</li>';
-    return;
-  }
-  if (!list.length) {
-    el.innerHTML = '<li class="empty">예정된 일정이 없습니다.</li>';
-    return;
-  }
-  el.innerHTML = list.map(function (item) {
-    return '<li><span class="cdate">' + (item.date || '') + '</span>' + labelOf(item) + '</li>';
+function renderCalendarMonth() {
+  const month = calState.month;
+  if (!month) return;
+  const y = month.getFullYear();
+  const m = month.getMonth();
+
+  document.getElementById('calTitle').textContent = y + '년 ' + (m + 1) + '월';
+  document.getElementById('calPrev').disabled = month <= calState.minMonth;
+  document.getElementById('calNext').disabled = month >= calState.maxMonth;
+
+  const startDow = new Date(y, m, 1).getDay();
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const todayStr = ymd_(new Date());
+
+  let html = DOW_.map(function (d, i) {
+    return '<div class="cal-dow' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') + '">' + d + '</div>';
   }).join('');
+
+  // 1일이 시작하는 요일까지 빈 칸으로 밀어준다.
+  for (let i = 0; i < startDow; i++) html += '<div class="cal-day blank"></div>';
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = y + '-' + pad2(m + 1) + '-' + pad2(d);
+    const evs = calState.events[key] || [];
+    const cls = ['cal-day'];
+    if (key === todayStr) cls.push('today');
+    if (key === calState.selected) cls.push('selected');
+    if (key < todayStr) cls.push('muted'); // 지난 날은 흐리게
+
+    let dots = '';
+    if (evs.some(function (e) { return e.type === 'macro'; })) dots += '<i class="cal-dot macro"></i>';
+    if (evs.some(function (e) { return e.type === 'earn'; })) dots += '<i class="cal-dot earn"></i>';
+
+    html += '<button type="button" class="' + cls.join(' ') + '" data-date="' + key + '">' +
+      '<span>' + d + '</span><span class="cal-dots">' + dots + '</span></button>';
+  }
+
+  document.getElementById('calGrid').innerHTML = html;
+  renderCalendarDetail();
 }
+
+function renderCalendarDetail() {
+  const el = document.getElementById('calDetail');
+  const key = calState.selected;
+  if (!key) { el.innerHTML = ''; return; }
+
+  const d = parseYmd_(key);
+  const title = (d.getMonth() + 1) + '월 ' + d.getDate() + '일 (' + DOW_[d.getDay()] + ')';
+  const evs = calState.events[key] || [];
+
+  let body;
+  if (!evs.length) {
+    body = '<div class="empty">' +
+      (calState.failed ? '일정을 불러오지 못했어요.' : '이 날은 예정된 일정이 없어요.') +
+      '</div>';
+  } else {
+    body = '<ul>' + evs.map(function (e) {
+      const tag = e.type === 'macro'
+        ? '<span class="cal-tag macro">지표</span>'
+        : '<span class="cal-tag earn">실적</span>';
+      const hour = e.hour === 'bmo' ? '<span class="cal-hour">장전</span>'
+        : e.hour === 'amc' ? '<span class="cal-hour">장후</span>' : '';
+      return '<li>' + tag + '<span>' + esc_(e.label) + '</span>' + hour + '</li>';
+    }).join('') + '</ul>';
+  }
+
+  el.innerHTML = '<div class="cal-detail-date">' + title + '</div>' + body;
+}
+
+document.getElementById('calGrid').addEventListener('click', function (ev) {
+  const btn = ev.target.closest('.cal-day[data-date]');
+  if (!btn) return;
+  calState.selected = btn.getAttribute('data-date');
+  renderCalendarMonth();
+});
+
+function shiftCalendarMonth(delta) {
+  const m = calState.month;
+  if (!m) return;
+  const next = new Date(m.getFullYear(), m.getMonth() + delta, 1);
+  if (next < calState.minMonth || next > calState.maxMonth) return;
+  calState.month = next;
+
+  // 달을 옮겼는데 선택은 이전 달에 남아있으면, 8월 달력을 보면서 상세는 7월 날짜가
+  // 뜨는 이상한 상태가 된다. 오늘이 그 달에 있으면 오늘을, 아니면 일정이 있는 첫 날을
+  // 자동으로 고른다(둘 다 없으면 선택 없음).
+  const prefix = next.getFullYear() + '-' + pad2(next.getMonth() + 1);
+  if (String(calState.selected || '').indexOf(prefix) !== 0) {
+    const todayStr = ymd_(new Date());
+    const firstEventDay = Object.keys(calState.events)
+      .filter(function (k) { return k.indexOf(prefix) === 0; })
+      .sort()[0];
+    calState.selected = todayStr.indexOf(prefix) === 0 ? todayStr : (firstEventDay || null);
+  }
+
+  renderCalendarMonth();
+}
+document.getElementById('calPrev').addEventListener('click', function () { shiftCalendarMonth(-1); });
+document.getElementById('calNext').addEventListener('click', function () { shiftCalendarMonth(1); });
 
 function renderNews(newsItems) {
   const el = document.getElementById('newsList');
