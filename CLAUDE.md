@@ -42,7 +42,9 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
   값을 스크립트 속성 `ECOS_CACHE_V1`에 저장하고, `fetchRatesParallel_`은 `readEcosCache_()`로
   그 저장값만 읽는다. 값이 없거나 26시간(`ECOS_MAX_AGE_MS_`) 넘게 낡았으면 기준금리는
   `BASE_RATE_KR_MANUAL`, 환율은 Yahoo(`KRW=X`)로 폴백. 트리거 설치는 Apps Script 편집기에서
-  **`setupTriggers()`**를 한 번 실행(중복 실행해도 안전). ECOS와 AI 브리핑 트리거를 함께 등록한다.
+  **`setupTriggers()`**를 한 번 실행(중복 실행해도 안전). ECOS(30분)와 AI 브리핑(3시간)
+  트리거를 함께 등록한다. 설정이 꼬였을 땐 **`checkSetup()`**을 실행하면 어떤 스크립트 속성이
+  비어있는지, 트리거가 걸려있는지, 저장된 값이 있는지 로그로 알려준다.
   `BASE_RATE_KR_MANUAL`은 손으로 관리하지 말 것 — ECOS 갱신에 성공할 때마다
   `refreshEcosCache()`가 최신값으로 자동으로 덮어쓴다(방치돼 낡는 사고를 막기 위함).
 - **`UrlFetchApp.fetchAll()`의 함정**: `muteHttpExceptions`는 HTTP 4xx/5xx만 막아준다.
@@ -80,8 +82,13 @@ git push        # GitHub(mayqueen120641-tech/ewequity) 백업
   `doGet(action=briefing)`은 그 저장값만 읽는다(ECOS와 같은 이유 — 대시보드가 Claude 응답을
   기다리면 안 되므로 **요청 경로에서 호출하지 말 것**). `ANTHROPIC_API_KEY`가 없으면 조용히
   건너뛰고, 프론트는 브리핑 카드와 정렬 토글을 숨긴 채 최신순으로 동작한다.
-  - 모델은 `claude-opus-4-8`, 적응형 사고(`thinking: {type:'adaptive'}`) + `effort: 'low'`.
-    GAS는 스트리밍이 안 되고 트리거 안에서 도는 호출이라 응답 시간을 짧게 유지해야 한다.
+  - **유료 API다**(클로드 코드 구독과 별개 종량제). 개인용이라 비용을 우선해 모델은
+    `claude-haiku-4-5`, 주기는 **3시간**(30분 주기면 하루 48회라 비용이 확 뛴다).
+    월 $2 안팎 예상. 품질을 올리려면 `claude-sonnet-5` / `claude-opus-4-8`로.
+  - **모델을 올릴 때는 파라미터도 같이 바꿔야 한다.** Haiku 4.5는 구형이라
+    `output_config.effort`가 **에러**이고 `thinking: {type:'adaptive'}`도 안 먹는다(4.6 이상 전용).
+    지금은 사고를 끄고, 스키마의 `reason` 필드가 항목별 근거를 쓰게 해서 대신하고 있다.
+    상위 모델로 올리면 `thinking: {type:'adaptive'}` + `effort`를 켤 것.
   - 응답은 **구조화된 출력**(`output_config.format`)으로 스키마를 강제한다. 스키마 제약:
     모든 object에 `additionalProperties:false`+`required` 필수, `minimum/maximum` 미지원이라
     점수 범위는 `enum: [1,2,3,4,5]`로 쓴다.

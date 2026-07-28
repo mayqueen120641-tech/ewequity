@@ -207,18 +207,73 @@ var ECOS_MAX_AGE_MS_ = 26 * 60 * 60 * 1000; // 26시간 넘게 갱신 안 됐으
  * - refreshAiBriefing: AI 브리핑 + 뉴스 중요도 (ANTHROPIC_API_KEY가 있을 때만 동작)
  */
 function setupTriggers() {
-  const handlers = ['refreshEcosCache', 'refreshAiBriefing'];
+  // 이름과 실제 함수를 같이 들고 다닌다(GAS에서 this[name]으로 부르는 건 불안정하다).
+  // 브리핑은 유료 API를 쓰므로 주기를 길게 잡았다 — 뉴스가 30분마다 의미 있게 바뀌지도
+  // 않고, 30분 주기로 돌리면 하루 48번 호출이라 비용이 확 뛴다.
+  const jobs = [
+    { name: 'refreshEcosCache', fn: refreshEcosCache, minutes: 30 },
+    { name: 'refreshAiBriefing', fn: refreshAiBriefing, hours: 3 }
+  ];
+  const names = jobs.map(function (j) { return j.name; });
+
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (handlers.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
+    if (names.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
-  handlers.forEach(function (fn) {
-    ScriptApp.newTrigger(fn).timeBased().everyMinutes(30).create();
+  jobs.forEach(function (j) {
+    const clock = ScriptApp.newTrigger(j.name).timeBased();
+    // everyMinutes는 1/5/10/15/30만 받는다. 그보다 긴 주기는 everyHours를 써야 한다.
+    (j.hours ? clock.everyHours(j.hours) : clock.everyMinutes(j.minutes)).create();
+  });
+  Logger.log('✅ 트리거 등록 완료: ' + jobs.map(function (j) {
+    return j.name + '(' + (j.hours ? j.hours + '시간' : j.minutes + '분') + ')';
+  }).join(', '));
+
+  // 30분 기다리지 않도록 지금 한 번씩 채워두되, 여기서 나는 오류가 트리거 등록까지
+  // 실패한 것처럼 보이면 안 되므로 각각 격리해서 실행하고 결과만 로그로 남긴다.
+  jobs.forEach(function (j) {
+    try {
+      j.fn();
+      Logger.log('✅ ' + j.name + ' 첫 실행 완료');
+    } catch (err) {
+      Logger.log('⚠️ ' + j.name + ' 첫 실행 실패(트리거는 등록됨, 30분 뒤 재시도): ' + err);
+    }
+  });
+}
+
+/**
+ * 설정이 제대로 됐는지 한눈에 보는 진단 함수. 편집기에서 실행하고 실행 로그를 보면 된다.
+ * 어떤 스크립트 속성이 비어있는지, 트리거가 걸려있는지, 저장된 값이 있는지 알려준다.
+ * (키 값 자체는 찍지 않는다 — 설정 여부만 확인한다.)
+ */
+function checkSetup() {
+  const props = PropertiesService.getScriptProperties();
+  const lines = ['--- 스크립트 속성 ---'];
+  ['ECOS_API_KEY', 'FRED_API_KEY', 'FINNHUB_API_KEY', 'NAVER_CLIENT_ID',
+    'NAVER_CLIENT_SECRET', 'ANTHROPIC_API_KEY', 'BASE_RATE_KR_MANUAL'
+  ].forEach(function (k) {
+    const v = props.getProperty(k);
+    lines.push('  ' + (v ? '✅' : '❌') + ' ' + k + (k === 'BASE_RATE_KR_MANUAL' && v ? ' = ' + v : ''));
   });
 
-  // 30분 기다리지 않도록 지금 한 번씩 채워둔다.
-  refreshEcosCache();
-  refreshAiBriefing();
-  Logger.log('트리거 등록 완료 (각 30분 주기): ' + handlers.join(', '));
+  lines.push('--- 트리거 ---');
+  const triggers = ScriptApp.getProjectTriggers();
+  if (!triggers.length) lines.push('  ❌ 없음 — setupTriggers()를 실행하세요');
+  triggers.forEach(function (t) { lines.push('  ✅ ' + t.getHandlerFunction()); });
+
+  lines.push('--- 저장된 값 ---');
+  const ecos = props.getProperty(ECOS_CACHE_PROP_);
+  lines.push('  ' + (ecos ? '✅' : '❌') + ' ECOS' + (ecos ? ' (' + JSON.parse(ecos).at + ')' : ''));
+  const brief = props.getProperty(AI_BRIEFING_PROP_);
+  if (brief) {
+    const b = JSON.parse(brief);
+    lines.push('  ✅ AI 브리핑 (' + b.at + ', 뉴스 ' + Object.keys(b.importance || {}).length + '건 채점)');
+  } else {
+    lines.push('  ❌ AI 브리핑 없음');
+  }
+
+  const out = lines.join('\n');
+  Logger.log(out);
+  return out;
 }
 
 /** 트리거가 호출하는 함수. 직접 실행해도 된다(값을 즉시 갱신하고 싶을 때). */
@@ -810,7 +865,8 @@ function stripTags_(s) {
 // doGet은 그 저장값만 읽는다.
 var ANTHROPIC_URL_ = 'https://api.anthropic.com/v1/messages';
 var AI_BRIEFING_PROP_ = 'AI_BRIEFING_V1';
-var AI_BRIEFING_MAX_AGE_MS_ = 3 * 60 * 60 * 1000; // 3시간 넘게 갱신 안 됐으면 오래됐다고 표시
+// 갱신 주기(3시간)보다 넉넉히 잡아야 정상 동작 중에 "오래됨"으로 잘못 표시되지 않는다.
+var AI_BRIEFING_MAX_AGE_MS_ = 8 * 60 * 60 * 1000;
 
 // 구조화된 출력(output_config.format) 스키마. 이걸 주면 응답이 반드시 이 형태의 JSON이라
 // 파싱 실패를 걱정하지 않아도 된다. 주의: 구조화된 출력은 minimum/maximum 같은 수치 제약을
@@ -921,25 +977,38 @@ function callClaudeBriefing_(apiKey, rates, news) {
     '중요도는 "이 뉴스가 한국 투자자의 판단을 실제로 바꿀 만한가"를 기준으로 봐. ' +
     '금리·환율·물가처럼 시장 전반에 영향을 주는 뉴스가 높고, 개별 홍보성·단신 기사는 낮아.';
 
-  const res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
-    method: 'post',
-    contentType: 'application/json',
-    muteHttpExceptions: true,
-    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    payload: JSON.stringify({
-      model: 'claude-opus-4-8',
-      max_tokens: 4000,
-      // 어떤 뉴스가 중요한지는 판단이 필요한 작업이라 적응형 사고를 켜두되, 트리거 안에서
-      // 도는 호출이라 effort는 낮게 잡아 응답 시간을 짧게 유지한다.
-      thinking: { type: 'adaptive' },
-      output_config: {
-        effort: 'low',
-        format: { type: 'json_schema', schema: BRIEFING_SCHEMA_ }
-      },
-      system: '너는 한국 개인 투자자를 위한 경제 브리핑 도우미야. 과장 없이 담백하게 쓴다.',
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
+  // muteHttpExceptions는 HTTP 오류만 막아준다. 연결 자체가 실패하면 예외가 그대로
+  // 튀어나와 호출한 쪽(트리거)까지 죽으므로 여기서 잡는다.
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post',
+      contentType: 'application/json',
+      muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        // 개인용 대시보드라 비용을 우선했다. 헤드라인 요약·채점은 난이도가 높지 않아
+        // Haiku로도 충분하다. 더 나은 판단이 필요하면 claude-sonnet-5 / claude-opus-4-8로
+        // 올리면 되는데, 그때는 아래 주석대로 파라미터도 같이 바꿔야 한다.
+        model: 'claude-haiku-4-5',
+        max_tokens: 4000,
+        // ⚠️ Haiku 4.5는 구형이라 최신 모델용 파라미터가 통하지 않는다:
+        //   - output_config.effort → 에러. (4.6 이상 + Opus 4.5에서만 지원)
+        //   - thinking: {type:'adaptive'} → 4.6 이상 전용. Haiku는 {type:'enabled', budget_tokens}만 됨.
+        // 여기서는 사고를 아예 끈다 — 스키마의 reason 필드가 항목별로 근거를 쓰게 만들어서
+        // 사실상 같은 역할을 하고, 출력 토큰도 아낀다.
+        // 상위 모델로 올릴 때는 thinking: {type:'adaptive'} + output_config.effort를 켤 것.
+        output_config: {
+          format: { type: 'json_schema', schema: BRIEFING_SCHEMA_ }
+        },
+        system: '너는 한국 개인 투자자를 위한 경제 브리핑 도우미야. 과장 없이 담백하게 쓴다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) {
+    console.log('callClaudeBriefing_: 연결 실패 - ' + err);
+    return null;
+  }
 
   const code = res.getResponseCode();
   const body = res.getContentText();
