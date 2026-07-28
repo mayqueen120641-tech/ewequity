@@ -40,7 +40,8 @@ function doGet(e) {
 function clearAllCaches() {
   const keys = [
     'rates', 'history_1M', 'history_3M', 'history_1Y', 'calendar',
-    'news_all', 'news_world', 'news_domestic', 'news_politics_domestic', 'news_politics_intl'
+    'news_all', 'news_world', 'news_domestic', 'news_politics_domestic', 'news_politics_intl',
+    'ecos_down' // ECOS 차단 표시(30분). 이걸 지우면 다음 요청에서 ECOS를 다시 시도한다.
   ];
   CacheService.getScriptCache().removeAll(keys);
   Logger.log('캐시 초기화 완료');
@@ -76,24 +77,209 @@ function fetchJson_(url, options) {
   return JSON.parse(text);
 }
 
-// ================= 1. 지표 5종 (기준금리 한/미, 환율, 유가, 코스피, 나스닥) =================
+// ================= 1. 지표 8종 (기준금리 한/미, 환율, 유가, 코스피, 나스닥, 금, 비트코인) =================
 function getRates(noCache) {
   const cached = noCache ? null : cacheGet_('rates');
   if (cached) return cached;
 
-  const data = {
-    base_rate_kr: safe_(getEcosBaseRateKR_),
-    base_rate_us: safe_(function () { return getFredLatest_('FEDFUNDS'); }),
-    usdkrw: safe_(getEcosUsdKrw_),
-    wti: safe_(function () { return getFredLatest_('DCOILWTICO'); }),
-    kospi: safe_(function () { return getYahooQuote_('^KS11'); }),
-    nasdaq: safe_(function () { return getYahooQuote_('^IXIC'); }),
-    gold: safe_(function () { return getYahooQuote_('GC=F'); }),
-    btc: safe_(function () { return getYahooQuote_('BTC-USD'); }),
-    updatedAt: new Date().toISOString()
-  };
+  const data = fetchRatesParallel_();
+  data.updatedAt = new Date().toISOString();
   cachePut_('rates', data, 900); // 15분 캐시
   return data;
+}
+
+// ECOS가 GAS 서버에서 막혀있는 걸 한 번 확인하면, 이 시간 동안은 아예 시도하지 않고
+// 곧바로 폴백값(수동 기준금리 / Yahoo 환율)을 쓴다. ECOS가 막혔을 때는 에러가 바로
+// 나는 게 아니라 응답이 올 때까지 수십 초를 매달려 있어서, 매 요청마다 그 시간을
+// 물면 "첫 로딩이 느린" 문제가 그대로 남기 때문.
+var ECOS_DOWN_KEY_ = 'ecos_down';
+var ECOS_DOWN_SEC_ = 1800; // 30분
+
+// 지표 8종을 UrlFetchApp.fetchAll()로 한 번에 병렬 요청한다. 예전엔 8개를 순차로
+// fetch()해서(ECOS가 막혀 재시도가 붙으면 더 느려짐) 첫 로딩이 오래 걸렸는데, 병렬화하면
+// 전체 응답 시간이 "가장 느린 요청 1개" 수준으로 줄어든다.
+// usdkrw는 ECOS 성공 여부를 미리 알 수 없으니 Yahoo(KRW=X) 요청도 항상 같이 보내놓고,
+// ECOS가 실패했을 때는 순차로 재요청하는 대신 이미 도착해있는 그 응답을 바로 대신 쓴다.
+function fetchRatesParallel_() {
+  const props = PropertiesService.getScriptProperties();
+  const ecosKey = props.getProperty('ECOS_API_KEY');
+  const fredKey = props.getProperty('FRED_API_KEY');
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd');
+  const ecosStartLong = Utilities.formatDate(new Date(Date.now() - 120 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
+  const ecosStartShort = Utilities.formatDate(new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
+  const noKey = function (name) { return new Error('스크립트 속성에 ' + name + ' 가 설정되어 있지 않습니다.'); };
+
+  // 최근에 ECOS가 막힌 게 확인됐으면 이번엔 건너뛴다(위 ECOS_DOWN_KEY_ 설명 참고).
+  const ecosSkipped = !!cacheGet_(ECOS_DOWN_KEY_);
+  const useEcos = !!ecosKey && !ecosSkipped;
+  const ecosError = function () {
+    if (!ecosKey) return noKey('ECOS_API_KEY');
+    return new Error('ECOS 접속 불가 상태로 이번 요청은 건너뜀 - 폴백값 표시 중');
+  };
+
+  const jobs = [
+    useEcos
+      ? { name: 'base_rate_kr', flaky: true, url: 'https://ecos.bok.or.kr/api/StatisticSearch/' + ecosKey + '/json/kr/1/10/722Y001/D/' + ecosStartLong + '/' + today + '/0101000', headers: BROWSER_LIKE_HEADERS_, parse: parseEcosBaseRate_ }
+      : { name: 'base_rate_kr', error: ecosError() },
+    fredKey
+      ? { name: 'base_rate_us', url: fredSeriesUrl_('FEDFUNDS', fredKey), parse: parseFred_ }
+      : { name: 'base_rate_us', error: noKey('FRED_API_KEY') },
+    useEcos
+      ? { name: 'usdkrw', flaky: true, url: 'https://ecos.bok.or.kr/api/StatisticSearch/' + ecosKey + '/json/kr/1/10/731Y001/D/' + ecosStartShort + '/' + today + '/0000001', headers: BROWSER_LIKE_HEADERS_, parse: parseEcosUsdKrw_ }
+      : { name: 'usdkrw', error: ecosError() },
+    { name: 'usdkrw_fallback', url: yahooChartUrl_('KRW=X'), parse: parseYahooQuote_ },
+    fredKey
+      ? { name: 'wti', url: fredSeriesUrl_('DCOILWTICO', fredKey), parse: parseFred_ }
+      : { name: 'wti', error: noKey('FRED_API_KEY') },
+    { name: 'kospi', url: yahooChartUrl_('^KS11'), parse: parseYahooQuote_ },
+    { name: 'nasdaq', url: yahooChartUrl_('^IXIC'), parse: parseYahooQuote_ },
+    { name: 'gold', url: yahooChartUrl_('GC=F'), parse: parseYahooQuote_ },
+    { name: 'btc', url: yahooChartUrl_('BTC-USD'), parse: parseYahooQuote_ }
+  ];
+
+  const toFetch = jobs.filter(function (j) { return !j.error; });
+  const fetched = fetchJobsSafe_(toFetch);
+
+  // 배치가 통째로 죽었다는 건 불안정한 요청(ECOS)이 연결 단계에서 막혔다는 뜻.
+  // 다음 요청부터는 아예 건너뛰도록 표시해둔다.
+  if (fetched.flakyFailed) cachePut_(ECOS_DOWN_KEY_, 1, ECOS_DOWN_SEC_);
+
+  const results = {};
+  jobs.forEach(function (j) {
+    if (j.error) results[j.name] = { error: String(j.error) };
+  });
+  toFetch.forEach(function (j, i) {
+    try {
+      const res = fetched.responses[i];
+      if (!res) throw new Error('요청 실패(연결 오류): ' + j.url);
+      const code = res.getResponseCode();
+      if (code >= 400) throw new Error('요청 실패(' + code + '): ' + j.url);
+      results[j.name] = j.parse(JSON.parse(res.getContentText()));
+    } catch (err) {
+      results[j.name] = { error: String(err) };
+    }
+  });
+
+  // base_rate_kr: ECOS 접속이 막혀있을 때 대비해, 스크립트 속성에
+  // BASE_RATE_KR_MANUAL 값을 넣어두면(금통위 발표 때만 가끔 바뀌는 값이라 수동
+  // 관리로도 충분함) 그 값을 대신 보여준다.
+  if (results.base_rate_kr.error) {
+    const manual = props.getProperty('BASE_RATE_KR_MANUAL');
+    if (manual) {
+      results.base_rate_kr = { value: parseFloat(manual), date: 'manual', note: 'ECOS 연동 실패 - 수동 입력값 표시 중' };
+    }
+  }
+
+  // usdkrw: ECOS가 막혀있으면 이미 병렬로 받아둔 Yahoo(KRW=X) 결과로 대체.
+  const usdkrw = results.usdkrw.error ? results.usdkrw_fallback : results.usdkrw;
+
+  return {
+    base_rate_kr: results.base_rate_kr,
+    base_rate_us: results.base_rate_us,
+    usdkrw: usdkrw,
+    wti: results.wti,
+    kospi: results.kospi,
+    nasdaq: results.nasdaq,
+    gold: results.gold,
+    btc: results.btc
+  };
+}
+
+// UrlFetchApp.fetchAll()은 배치 안의 요청 하나가 "Address unavailable" 같은 연결 레벨
+// 오류를 내면 그 요청만 실패하는 게 아니라 fetchAll() 호출 자체가 예외를 던지며 배치 전체
+// 응답을 잃어버린다(HTTP 4xx/5xx는 muteHttpExceptions로 막히지만 연결 실패는 안 막힘).
+// 그래서 배치가 죽으면 `flaky`로 표시된 요청(= ECOS)만 빼고 나머지를 한 번 더 병렬로
+// 요청한다. 하나씩 순차 재시도하면 폴백 경로에서 오히려 더 느려지므로 재시도도 병렬로.
+// jobs와 같은 길이의 배열을 돌려주며, 못 받은 자리는 null이다.
+function fetchJobsSafe_(jobs) {
+  const toRequest = function (j) {
+    return Object.assign({ url: j.url, muteHttpExceptions: true }, j.headers ? { headers: j.headers } : {});
+  };
+  if (!jobs.length) return { responses: [], flakyFailed: false };
+
+  try {
+    return { responses: UrlFetchApp.fetchAll(jobs.map(toRequest)), flakyFailed: false };
+  } catch (err) {
+    const responses = jobs.map(function () { return null; });
+    const stableIdx = [];
+    const stable = [];
+    jobs.forEach(function (j, i) {
+      if (!j.flaky) { stableIdx.push(i); stable.push(toRequest(j)); }
+    });
+    if (stable.length) {
+      try {
+        const got = UrlFetchApp.fetchAll(stable);
+        stableIdx.forEach(function (idx, k) { responses[idx] = got[k]; });
+      } catch (err2) {
+        // 두 번째 배치까지 죽으면 전부 null로 두고, 각 지표가 개별 에러로 표시된다.
+      }
+    }
+    const hadFlaky = jobs.some(function (j) { return j.flaky; });
+    return { responses: responses, flakyFailed: hadFlaky };
+  }
+}
+
+function fredSeriesUrl_(seriesId, apiKey) {
+  return 'https://api.stlouisfed.org/fred/series/observations?series_id=' + seriesId +
+    '&api_key=' + apiKey + '&file_type=json&sort_order=desc&limit=2';
+}
+
+function yahooChartUrl_(symbol) {
+  return 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?interval=1d&range=5d';
+}
+
+function parseEcosBaseRate_(json) {
+  const rows = json.StatisticSearch && json.StatisticSearch.row;
+  if (!rows || !rows.length) throw new Error('ECOS 기준금리 응답 없음. 통계코드/기간을 확인하세요.');
+  const last = rows[rows.length - 1];
+  return { value: parseFloat(last.DATA_VALUE), date: last.TIME };
+}
+
+function parseEcosUsdKrw_(json) {
+  const rows = json.StatisticSearch && json.StatisticSearch.row;
+  if (!rows || !rows.length) throw new Error('ECOS 환율 응답 없음.');
+  const last = rows[rows.length - 1];
+  const prev = rows.length > 1 ? rows[rows.length - 2] : last;
+  return {
+    value: parseFloat(last.DATA_VALUE),
+    change: parseFloat(last.DATA_VALUE) - parseFloat(prev.DATA_VALUE),
+    date: last.TIME
+  };
+}
+
+function parseFred_(json) {
+  const obs = json.observations;
+  if (!obs || !obs.length) throw new Error('FRED 응답 없음.');
+  const last = obs[0];
+  const prev = obs[1] || last;
+  return {
+    value: parseFloat(last.value),
+    change: parseFloat(last.value) - parseFloat(prev.value),
+    date: last.date
+  };
+}
+
+function parseYahooQuote_(json) {
+  const result = json.chart && json.chart.result && json.chart.result[0];
+  if (!result) throw new Error('Yahoo Finance 응답 없음.');
+  const meta = result.meta;
+  const closes = ((result.indicators.quote[0] && result.indicators.quote[0].close) || [])
+    .filter(function (c) { return c != null; });
+  const current = meta.regularMarketPrice != null ? meta.regularMarketPrice : closes[closes.length - 1];
+  // meta.previousClose가 비어있는 경우(지수 심볼에서 종종 발생)를 대비해
+  // 최근 종가 배열에서 전일 종가를 직접 계산한다.
+  let prevClose = meta.previousClose;
+  if (prevClose == null && closes.length >= 2) {
+    prevClose = closes[closes.length - 2];
+  }
+  const change = (current != null && prevClose != null) ? current - prevClose : null;
+  const changePct = (change != null && prevClose) ? (change / prevClose) * 100 : null;
+  return {
+    value: current,
+    change: change,
+    changePct: changePct,
+    date: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null
+  };
 }
 
 // ================= 5. 종목 검색 (임의 심볼 조회) =================
@@ -210,93 +396,9 @@ var BROWSER_LIKE_HEADERS_ = {
   'Accept': 'application/json'
 };
 
-function getEcosBaseRateKR_() {
-  try {
-    const key = getProp_('ECOS_API_KEY');
-    const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd');
-    const start = Utilities.formatDate(new Date(Date.now() - 120 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
-    const url = 'https://ecos.bok.or.kr/api/StatisticSearch/' + key +
-      '/json/kr/1/10/722Y001/D/' + start + '/' + today + '/0101000';
-    const json = fetchJson_(url, { headers: BROWSER_LIKE_HEADERS_ });
-    const rows = json.StatisticSearch && json.StatisticSearch.row;
-    if (!rows || !rows.length) throw new Error('ECOS 기준금리 응답 없음. 통계코드/기간을 확인하세요.');
-    const last = rows[rows.length - 1];
-    return { value: parseFloat(last.DATA_VALUE), date: last.TIME };
-  } catch (err) {
-    // ECOS 접속이 막혀있을 때 대비: 스크립트 속성에 BASE_RATE_KR_MANUAL 값을 넣어두면
-    // (금통위 발표 때만 가끔 바뀌는 값이라 수동 관리로도 충분함) 그 값을 대신 보여준다.
-    const manual = PropertiesService.getScriptProperties().getProperty('BASE_RATE_KR_MANUAL');
-    if (manual) {
-      return { value: parseFloat(manual), date: 'manual', note: 'ECOS 연동 실패 - 수동 입력값 표시 중' };
-    }
-    throw err;
-  }
-}
-
-function getEcosUsdKrw_() {
-  try {
-    const key = getProp_('ECOS_API_KEY');
-    const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd');
-    const start = Utilities.formatDate(new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
-    const url = 'https://ecos.bok.or.kr/api/StatisticSearch/' + key +
-      '/json/kr/1/10/731Y001/D/' + start + '/' + today + '/0000001';
-    const json = fetchJson_(url, { headers: BROWSER_LIKE_HEADERS_ });
-    const rows = json.StatisticSearch && json.StatisticSearch.row;
-    if (!rows || !rows.length) throw new Error('ECOS 환율 응답 없음.');
-    const last = rows[rows.length - 1];
-    const prev = rows.length > 1 ? rows[rows.length - 2] : last;
-    return {
-      value: parseFloat(last.DATA_VALUE),
-      change: parseFloat(last.DATA_VALUE) - parseFloat(prev.DATA_VALUE),
-      date: last.TIME
-    };
-  } catch (err) {
-    // ECOS가 막혀있으면 Yahoo Finance의 USD/KRW 심볼(KRW=X)로 대체
-    // (코스피·나스닥과 동일한 방식이라 이미 접속이 확인된 경로)
-    return getYahooQuote_('KRW=X');
-  }
-}
-
-function getFredLatest_(seriesId) {
-  const key = getProp_('FRED_API_KEY');
-  const url = 'https://api.stlouisfed.org/fred/series/observations?series_id=' + seriesId +
-    '&api_key=' + key + '&file_type=json&sort_order=desc&limit=2';
-  const json = fetchJson_(url);
-  const obs = json.observations;
-  if (!obs || !obs.length) throw new Error('FRED 응답 없음: ' + seriesId);
-  const last = obs[0];
-  const prev = obs[1] || last;
-  return {
-    value: parseFloat(last.value),
-    change: parseFloat(last.value) - parseFloat(prev.value),
-    date: last.date
-  };
-}
-
 function getYahooQuote_(symbol) {
-  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) +
-    '?interval=1d&range=5d';
-  const json = fetchJson_(url);
-  const result = json.chart && json.chart.result && json.chart.result[0];
-  if (!result) throw new Error('Yahoo Finance 응답 없음: ' + symbol);
-  const meta = result.meta;
-  const closes = ((result.indicators.quote[0] && result.indicators.quote[0].close) || [])
-    .filter(function (c) { return c != null; });
-  const current = meta.regularMarketPrice != null ? meta.regularMarketPrice : closes[closes.length - 1];
-  // meta.previousClose가 비어있는 경우(지수 심볼에서 종종 발생)를 대비해
-  // 최근 종가 배열에서 전일 종가를 직접 계산한다.
-  let prevClose = meta.previousClose;
-  if (prevClose == null && closes.length >= 2) {
-    prevClose = closes[closes.length - 2];
-  }
-  const change = (current != null && prevClose != null) ? current - prevClose : null;
-  const changePct = (change != null && prevClose) ? (change / prevClose) * 100 : null;
-  return {
-    value: current,
-    change: change,
-    changePct: changePct,
-    date: meta.regularMarketTime ? new Date(meta.regularMarketTime * 1000).toISOString() : null
-  };
+  const json = fetchJson_(yahooChartUrl_(symbol));
+  return parseYahooQuote_(json);
 }
 
 // ================= 2. 히스토리 차트 (코스피 vs 나스닥) =================
