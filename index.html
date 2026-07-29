@@ -6,16 +6,20 @@
 <title>EweQuity — 매일 아침 경제 브리핑 대시보드</title>
 <style>
   :root{
-    --bg:#0b1424;
-    --panel:#121d33;
-    --panel-border:#233047;
-    --text:#e8edf6;
-    --sub:#8593ab;
-    --up:#ff5c5c;
-    --down:#3aa0ff;
-    --accent:#ff7a45;
-    --accent2:#3aa0ff;
-    --accent3:#4ec9a0;
+    /* 크림 톤 팔레트. 상승=빨강, 하락=파랑(국내 증시 관례) */
+    --bg:#F7F2E9;
+    --panel:#FFFDFA;
+    --panel-border:#EBE0CF;
+    --text:#4A3B2E;
+    --sub:#A08F7B;
+    --up:#D9614C;
+    --down:#4A7FD0;
+    --accent:#C9A063;
+    --accent2:#4A7FD0;
+    --accent3:#7BA98A;
+    --sidebar:#FFFDFA;
+    --hover:#F5EDE0;
+    --shadow:0 1px 3px rgba(74,59,46,.06), 0 1px 2px rgba(74,59,46,.04);
   }
   *{box-sizing:border-box;}
   body{
@@ -23,142 +27,111 @@
     background:var(--bg);
     color:var(--text);
     font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic",sans-serif;
-    padding:24px;
   }
-  .wrap{max-width:1200px;margin:0 auto;}
 
-  header{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px;}
-  .logo{font-size:28px;font-weight:800;letter-spacing:-0.5px;}
-  .logo span.ewe{color:var(--accent);}
-  .logo span.quity{color:var(--text);}
-  .subtitle{color:var(--sub);font-size:13px;margin-top:4px;}
-  .updated-wrap{display:flex;align-items:center;gap:12px;}
-  .updated{color:var(--sub);font-size:12px;text-align:right;}
+  /* ---------- 레이아웃: 사이드바 + 본문 ---------- */
+  .app{display:flex;min-height:100vh;}
+
+  .sidebar{
+    flex:0 0 216px;background:var(--sidebar);border-right:1px solid var(--panel-border);
+    padding:22px 14px;display:flex;flex-direction:column;gap:6px;
+    position:sticky;top:0;height:100vh;overflow-y:auto;
+  }
+  .brand{display:flex;align-items:center;gap:10px;padding:0 8px 18px;}
+  .brand-mark{
+    width:34px;height:34px;border-radius:10px;flex:0 0 auto;
+    background:var(--hover);border:1px solid var(--panel-border);
+    display:flex;align-items:center;justify-content:center;font-size:17px;
+  }
+  .brand-text .logo{font-size:19px;font-weight:800;letter-spacing:-.4px;line-height:1;}
+  .brand-text .logo .ewe{color:var(--accent);}
+  .brand-text .logo .quity{color:var(--text);}
+  .brand-text .tagline{font-size:8px;letter-spacing:.09em;color:var(--sub);margin-top:3px;}
+
+  .nav a{
+    display:flex;align-items:center;gap:10px;padding:9px 12px;margin-bottom:2px;
+    border-radius:9px;color:var(--sub);text-decoration:none;font-size:13.5px;
+    transition:background .12s ease,color .12s ease;
+  }
+  .nav a:hover{background:var(--hover);color:var(--text);}
+  .nav a.active{background:var(--hover);color:var(--text);font-weight:600;}
+  .nav a.active .nav-icon{color:var(--accent);}
+  .nav-icon{flex:0 0 16px;text-align:center;font-size:14px;color:var(--sub);}
+
+  .side-note{
+    margin-top:auto;background:var(--hover);border:1px solid var(--panel-border);
+    border-radius:12px;padding:14px;font-size:11.5px;color:var(--sub);line-height:1.65;
+  }
+  .side-note b{color:var(--text);display:block;margin-bottom:4px;font-size:12.5px;}
+
+  .main{flex:1;min-width:0;display:flex;flex-direction:column;}
+
+  .topbar{
+    display:flex;align-items:center;gap:16px;padding:14px 24px;
+    background:var(--panel);border-bottom:1px solid var(--panel-border);
+    position:sticky;top:0;z-index:20;
+  }
+  .topbar .search-box{flex:1;max-width:520px;margin:0;}
+  .updated-wrap{display:flex;align-items:center;gap:12px;margin-left:auto;}
+  .updated{color:var(--sub);font-size:11px;text-align:right;line-height:1.5;}
   .updated b{color:var(--text);}
   .refresh-btn{
-    background:#0d1729;border:1px solid var(--panel-border);color:var(--text);
-    font-size:12px;padding:7px 12px;border-radius:8px;cursor:pointer;white-space:nowrap;
-    transition:background .12s ease, opacity .12s ease;
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--text);
+    font-size:12px;padding:7px 12px;border-radius:9px;cursor:pointer;white-space:nowrap;
+    font-family:inherit;transition:background .12s ease,opacity .12s ease;
   }
-  .refresh-btn:hover{background:#13213b;}
+  .refresh-btn:hover{background:var(--hover);}
   .refresh-btn:disabled{opacity:.5;cursor:default;}
+
+  .content{padding:22px 24px 40px;max-width:1400px;width:100%;}
+  .page{display:none;}
+  .page.active{display:block;}
+  .page-head{margin-bottom:18px;}
+  .page-head h1{font-size:21px;margin:0 0 4px;font-weight:700;}
+  .page-head p{margin:0;font-size:13px;color:var(--sub);}
 
   .setup-banner{
     display:none;
-    background:#2a2210;border:1px solid #6b5518;color:#ffd580;
-    padding:12px 16px;border-radius:10px;font-size:13px;margin-bottom:20px;line-height:1.6;
+    background:#FDF6E3;border:1px solid #E8D9B0;color:#8A6D3B;
+    padding:12px 16px;border-radius:10px;font-size:13px;margin-bottom:18px;line-height:1.6;
   }
-  .setup-banner code{background:#00000040;padding:2px 6px;border-radius:4px;}
+  .setup-banner code{background:#00000010;padding:2px 6px;border-radius:4px;}
 
+  /* ---------- 카드 / 패널 ---------- */
   .cards{
-    display:grid;
-    grid-template-columns:repeat(auto-fit, minmax(180px,1fr));
-    gap:14px;
-    margin-bottom:20px;
+    display:grid;grid-template-columns:repeat(auto-fit, minmax(180px,1fr));
+    gap:14px;margin-bottom:18px;
   }
   .card{
-    background:var(--panel);
-    border:1px solid var(--panel-border);
-    border-left:3px solid var(--accent2);
-    border-radius:12px;
-    padding:16px;
+    background:var(--panel);border:1px solid var(--panel-border);
+    border-radius:14px;padding:16px;box-shadow:var(--shadow);
   }
-  .card.up{border-left-color:var(--up);}
-  .card.down{border-left-color:var(--down);}
+  .card.up{border-top:2px solid var(--up);}
+  .card.down{border-top:2px solid var(--down);}
   .card .label{color:var(--sub);font-size:12px;margin-bottom:8px;}
-  .card .value{font-size:22px;font-weight:700;}
+  .card .value{font-size:22px;font-weight:700;letter-spacing:-.3px;}
   .card .change{font-size:12px;margin-top:6px;}
   .change.pos{color:var(--up);}
   .change.neg{color:var(--down);}
   .change.flat{color:var(--sub);}
 
-  .grid2{display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-bottom:20px;}
-  @media (max-width:900px){ .grid2{grid-template-columns:1fr;} }
-  /* 그리드 아이템의 기본 min-width:auto는 내부 콘텐츠(캔버스 등)의 intrinsic 크기를
-     트랙 최소 크기로 반영해버려서, 차트 갱신 때마다 canvas.width가 커지면 옆 칸(캘린더)이
-     찌부러드는 원인이 된다. min-width:0으로 그 계산에서 캔버스 intrinsic 크기를 제외한다. */
-  .grid2 > .panel{min-width:0;}
-
   .panel{
-    background:var(--panel);
-    border:1px solid var(--panel-border);
-    border-radius:12px;
-    padding:18px;
+    background:var(--panel);border:1px solid var(--panel-border);
+    border-radius:14px;padding:18px;margin-bottom:18px;box-shadow:var(--shadow);
   }
-  .panel h2{font-size:15px;margin:0 0 14px 0;}
+  .panel h2{font-size:15px;margin:0 0 14px 0;font-weight:700;}
+  .grid2{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-bottom:18px;}
+  .grid2 > .panel{min-width:0;margin-bottom:0;}
+  .loading,.empty{color:var(--sub);font-size:13px;padding:6px 0;}
 
-  .range-btns{display:flex;gap:6px;margin-bottom:10px;}
+  canvas{width:100%;height:280px;display:block;}
+  .range-btns{display:flex;gap:6px;margin-bottom:12px;}
   .range-btns button{
-    background:transparent;border:1px solid var(--panel-border);color:var(--sub);
-    padding:4px 12px;border-radius:20px;font-size:12px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    font-size:12px;padding:5px 12px;border-radius:8px;cursor:pointer;font-family:inherit;
   }
-  .range-btns button.active{background:var(--accent);color:#1a0e05;border-color:var(--accent);font-weight:600;}
-
-  /* ---------- 달력 ---------- */
-  .cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
-  .cal-title{font-size:14px;font-weight:600;}
-  .cal-nav{display:flex;gap:6px;}
-  .cal-nav button{
-    width:26px;height:26px;line-height:1;padding:0;
-    background:#0d1729;border:1px solid var(--panel-border);color:var(--sub);
-    border-radius:7px;cursor:pointer;font-size:13px;
-    transition:background .12s ease,color .12s ease;
-  }
-  .cal-nav button:hover{background:#13213b;color:var(--text);}
-  .cal-nav button:disabled{opacity:.35;cursor:default;}
-
-  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
-  .cal-dow{
-    text-align:center;font-size:11px;color:var(--sub);
-    padding-bottom:5px;letter-spacing:.03em;
-  }
-  .cal-dow.sun{color:#e06a6a;}
-  .cal-dow.sat{color:#6a95e0;}
-
-  /* 칸을 정사각형(aspect-ratio)으로 두면 패널이 넓어질 때 칸이 같이 커져서 달력이
-     화면 하나를 다 잡아먹는다(폭이 좁은 우측 칼럼에선 멀쩡해 보여도 좁은 화면에서
-     패널이 전체 너비가 되면 94px짜리 칸이 된다). 높이는 고정폭으로 묶어둔다. */
-  .cal-day{
-    position:relative;min-width:0;min-height:40px;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
-    background:transparent;border:1px solid transparent;border-radius:8px;
-    color:var(--text);font-size:12px;font-family:inherit;
-    cursor:pointer;padding:0;
-    transition:background .12s ease,border-color .12s ease;
-  }
-  .cal-day:hover:not(.blank){background:#1a2740;}
-  .cal-day.blank{cursor:default;}
-  .cal-day.muted{color:#4d5b73;}
-  .cal-day.today{border-color:var(--accent);font-weight:700;}
-  .cal-day.selected{background:var(--accent);color:#1a0e05;font-weight:700;}
-  .cal-day.selected .cal-dot{background:#1a0e05;}
-
-  /* 일정이 있는 날 아래 찍히는 점. 종류별 색: 지표=주황, 실적=파랑 */
-  .cal-dots{display:flex;gap:3px;height:5px;align-items:center;}
-  .cal-dot{display:inline-block;flex:0 0 auto;width:5px;height:5px;border-radius:50%;}
-  .cal-dot.macro{background:var(--accent);}
-  .cal-dot.kr{background:var(--accent3);}
-  .cal-dot.earn{background:var(--accent2);}
-
-  .cal-detail{margin-top:14px;border-top:1px solid var(--panel-border);padding-top:12px;}
-  .cal-detail-date{font-size:13px;font-weight:600;margin-bottom:8px;}
-  /* 실적 시즌엔 하루 20건 넘게 몰리는 날이 있어서 상세 목록은 스크롤로 묶는다. */
-  .cal-detail ul{list-style:none;margin:0;padding:0;font-size:13px;max-height:260px;overflow-y:auto;}
-  .cal-detail li{display:flex;align-items:baseline;gap:8px;padding:6px 0;}
-  .cal-detail li + li{border-top:1px solid var(--panel-border);}
-  .cal-tag{
-    flex:0 0 auto;font-size:10px;padding:2px 6px;border-radius:5px;
-    border:1px solid currentColor;line-height:1.4;
-  }
-  .cal-tag.macro{color:var(--accent);}
-  .cal-tag.kr{color:var(--accent3);}
-  .cal-tag.earn{color:var(--accent2);}
-  /* 실적 발표 시각: bmo(장 시작 전) / amc(장 마감 후) */
-  .cal-hour{color:var(--sub);font-size:11px;}
-  .cal-detail .empty{color:var(--sub);font-size:12px;padding:6px 0;}
-
-  .cal-legend{display:flex;gap:14px;margin-top:10px;font-size:11px;color:var(--sub);}
-  .cal-legend span{display:flex;align-items:center;gap:5px;}
+  .range-btns button:hover{background:var(--hover);color:var(--text);}
+  .range-btns button.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
 
   /* ---------- AI 브리핑 ---------- */
   .briefing{border-left:3px solid var(--accent);}
@@ -170,15 +143,14 @@
   }
   .briefing-stale{display:none;font-size:11px;color:var(--sub);}
   .briefing.is-stale .briefing-stale{display:inline;}
-  .briefing-text{margin:10px 0 0;font-size:14px;line-height:1.75;color:var(--text);}
+  .briefing-text{margin:10px 0 0;font-size:13.5px;line-height:1.8;color:var(--text);}
 
   .briefing-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
   .briefing-tags span{
-    font-size:11px;color:var(--accent2);background:#0d1729;
-    border:1px solid var(--panel-border);border-radius:999px;padding:3px 9px;
+    font-size:11px;color:var(--accent);background:var(--hover);
+    border:1px solid var(--panel-border);border-radius:999px;padding:3px 10px;
   }
 
-  /* 카테고리별 한 줄 요약 — 넓으면 2열, 좁으면 1열 */
   .briefing-sectors{
     display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
     gap:2px 18px;margin-top:14px;padding-top:12px;border-top:1px solid var(--panel-border);
@@ -188,83 +160,22 @@
   .sector-tone{flex:0 0 auto;font-size:11px;}
   .sector-line{flex:1;min-width:0;line-height:1.55;}
 
-  /* h2의 아래 여백(.panel h2)을 없앤 만큼 컨테이너가 대신 띄운다. */
-  .news-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
-  .news-head h2{margin:0;}
-  .news-sort{display:flex;gap:6px;}
-  .news-sort button{
-    background:#0d1729;border:1px solid var(--panel-border);color:var(--sub);
-    font-size:11px;padding:5px 10px;border-radius:7px;cursor:pointer;font-family:inherit;
-    transition:background .12s ease,color .12s ease;
-  }
-  .news-sort button:hover{background:#13213b;color:var(--text);}
-  .news-sort button.active{background:var(--accent);color:#1a0e05;border-color:var(--accent);font-weight:600;}
-
-  /* 중요도 배지 — 5·4점만 표시한다. 전 항목에 배지를 달면 변별력이 사라진다. */
-  .news-rank{
-    font-size:10px;padding:1px 5px;border-radius:4px;margin-right:6px;
-    border:1px solid currentColor;line-height:1.5;white-space:nowrap;
-  }
-  .news-rank.top{color:var(--up);}
-  .news-rank.high{color:var(--accent);}
-
-  .news-tags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
-  .news-tags button{
-    background:#1c2942;border:1px solid var(--panel-border);color:var(--sub);
-    padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer;
-  }
-  .news-tags button.active{background:var(--accent2);color:#04101f;border-color:var(--accent2);font-weight:600;}
-
-  .news-list{display:flex;flex-direction:column;gap:10px;}
-  .news-item{padding:10px 0;border-bottom:1px solid var(--panel-border);}
-  .news-item:last-child{border-bottom:none;}
-  .news-item a{color:var(--text);text-decoration:none;font-size:14px;font-weight:500;}
-  .news-item a:hover{color:var(--accent);}
-  .news-item .meta{color:var(--sub);font-size:11px;margin-top:4px;}
-
-  .loading, .empty{color:var(--sub);font-size:13px;padding:12px 0;}
-  canvas{max-height:280px;display:block;max-width:100%;}
-
-  .card .label{position:relative;display:inline-block;}
-  .card .label[data-tip]{cursor:help;border-bottom:1px dotted var(--sub);}
-  .card .label[data-tip]::after{
-    content:attr(data-tip);
-    position:absolute;
-    left:0;
-    top:calc(100% + 8px);
-    background:#0d1729;
-    border:1px solid var(--panel-border);
-    color:var(--text);
-    font-size:12px;
-    line-height:1.5;
-    font-weight:400;
-    padding:10px 12px;
-    border-radius:8px;
-    width:230px;
-    white-space:normal;
-    z-index:30;
-    opacity:0;
-    visibility:hidden;
-    pointer-events:none;
-    box-shadow:0 8px 24px rgba(0,0,0,.45);
-    transition:opacity .12s ease;
-  }
-  .card .label[data-tip]:hover::after{opacity:1;visibility:visible;}
-
-  .search-box{display:flex;gap:8px;margin-bottom:14px;}
+  /* ---------- 종목 검색 ---------- */
+  .search-box{display:flex;gap:8px;margin-bottom:8px;}
   .search-box input{
-    flex:1;background:#0d1729;border:1px solid var(--panel-border);color:var(--text);
-    padding:8px 12px;border-radius:8px;font-size:13px;
+    flex:1;background:var(--bg);border:1px solid var(--panel-border);color:var(--text);
+    border-radius:10px;padding:10px 14px;font-size:13px;font-family:inherit;outline:none;
   }
-  .search-box input:focus{outline:none;border-color:var(--accent2);}
+  .search-box input:focus{border-color:var(--accent);}
+  .search-box input::placeholder{color:var(--sub);}
   .search-box button{
-    background:var(--accent2);border:none;color:#04101f;font-weight:600;
-    padding:8px 18px;border-radius:8px;font-size:13px;cursor:pointer;
+    background:var(--accent);border:none;color:#fff;font-weight:600;
+    padding:0 18px;border-radius:10px;cursor:pointer;font-size:13px;font-family:inherit;
   }
-  .search-hint{color:var(--sub);font-size:11px;margin:-8px 0 14px 0;}
+  .search-hint{color:var(--sub);font-size:12px;line-height:1.6;}
   .search-result{
-    display:none;background:#0d1729;border:1px solid var(--panel-border);
-    border-left:3px solid var(--accent2);border-radius:10px;padding:14px 16px;
+    display:none;margin-top:14px;background:var(--bg);border:1px solid var(--panel-border);
+    border-left:3px solid var(--accent);border-radius:10px;padding:14px 16px;
   }
   .search-result.show{display:block;}
   .search-result .sr-symbol{color:var(--sub);font-size:12px;}
@@ -272,20 +183,19 @@
   .search-result .sr-change{font-size:13px;margin-top:4px;}
   .search-result.error{border-left-color:var(--up);color:var(--sub);font-size:13px;}
   .sr-add{
-    margin-top:10px;background:var(--accent2);border:none;color:#04101f;
-    font-size:12px;font-weight:600;padding:7px 12px;border-radius:7px;cursor:pointer;font-family:inherit;
+    margin-top:10px;background:var(--accent);border:none;color:#fff;
+    font-size:12px;font-weight:600;padding:7px 12px;border-radius:8px;cursor:pointer;font-family:inherit;
   }
   .sr-add:disabled{opacity:.45;cursor:default;}
 
-  /* ---------- 관심종목(워치리스트) ---------- */
+  /* ---------- 관심종목 ---------- */
   .watch-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;}
   .watch-head h2{margin:0;}
-  .watch-count{font-size:11px;color:var(--sub);}
+  .watch-count{font-size:11px;color:var(--sub);font-weight:400;}
   .watch-empty{color:var(--sub);font-size:13px;line-height:1.7;}
-  /* 지표 카드와 같은 그리드를 쓰되, 카드마다 삭제 버튼이 겹쳐 앉는다. */
   .watch-grid{display:grid;grid-template-columns:repeat(auto-fit, minmax(180px,1fr));gap:14px;}
   .watch-card{position:relative;}
-  .watch-card .label{padding-right:22px;} /* 삭제 버튼과 종목명이 겹치지 않도록 */
+  .watch-card .label{padding-right:22px;}
   .watch-del{
     position:absolute;top:8px;right:8px;width:20px;height:20px;line-height:1;
     background:transparent;border:none;color:var(--sub);cursor:pointer;
@@ -293,7 +203,7 @@
     opacity:0;transition:opacity .12s ease,background .12s ease,color .12s ease;
   }
   .watch-card:hover .watch-del{opacity:1;}
-  .watch-del:hover{background:#1a2740;color:var(--text);}
+  .watch-del:hover{background:var(--hover);color:var(--text);}
   .watch-del:focus-visible{opacity:1;}
   .watch-card .sym{color:var(--sub);font-size:11px;margin-top:6px;}
   .watch-card.err .value{font-size:13px;font-weight:400;color:var(--sub);}
@@ -303,21 +213,17 @@
   .rank-head h2{margin:0;}
   .rank-tabs{display:flex;gap:6px;}
   .rank-tabs button{
-    background:#0d1729;border:1px solid var(--panel-border);color:var(--sub);
-    font-size:11px;padding:5px 10px;border-radius:7px;cursor:pointer;font-family:inherit;
-    transition:background .12s ease,color .12s ease;
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;font-family:inherit;
   }
-  .rank-tabs button:hover{background:#13213b;color:var(--text);}
-  .rank-tabs button.active{background:var(--accent);color:#1a0e05;border-color:var(--accent);font-weight:600;}
-
-  /* 종목 수가 많아 표는 자체 스크롤로 묶는다. 가로도 좁은 화면에서 넘칠 수 있어 스크롤. */
-  .rank-wrap{max-height:420px;overflow:auto;}
+  .rank-tabs button:hover{background:var(--hover);color:var(--text);}
+  .rank-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
+  .rank-wrap{max-height:520px;overflow:auto;}
   table.rank{width:100%;border-collapse:collapse;font-size:13px;}
-  table.rank th,table.rank td{padding:8px 10px;text-align:right;white-space:nowrap;}
+  table.rank th,table.rank td{padding:9px 10px;text-align:right;white-space:nowrap;}
   table.rank th{
     position:sticky;top:0;background:var(--panel);z-index:1;
-    font-size:11px;color:var(--sub);font-weight:500;
-    border-bottom:1px solid var(--panel-border);
+    font-size:11px;color:var(--sub);font-weight:500;border-bottom:1px solid var(--panel-border);
   }
   table.rank td{border-bottom:1px solid var(--panel-border);}
   table.rank tr:last-child td{border-bottom:none;}
@@ -327,153 +233,393 @@
   table.rank .c-name a:hover{text-decoration:underline;color:var(--accent);}
   table.rank .c-cap{color:var(--sub);}
   .rank-empty{color:var(--sub);font-size:13px;}
+
+  /* ---------- 달력 ---------- */
+  .cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+  .cal-title{font-size:14px;font-weight:600;}
+  .cal-nav{display:flex;gap:6px;}
+  .cal-nav button{
+    width:26px;height:26px;line-height:1;padding:0;
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;
+  }
+  .cal-nav button:hover{background:var(--hover);color:var(--text);}
+  .cal-nav button:disabled{opacity:.35;cursor:default;}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
+  .cal-dow{text-align:center;font-size:11px;color:var(--sub);padding-bottom:5px;}
+  .cal-dow.sun{color:var(--up);}
+  .cal-dow.sat{color:var(--down);}
+  .cal-day{
+    position:relative;min-width:0;min-height:40px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+    background:transparent;border:1px solid transparent;border-radius:9px;
+    color:var(--text);font-size:12px;font-family:inherit;cursor:pointer;padding:0;
+    transition:background .12s ease,border-color .12s ease;
+  }
+  .cal-day:hover:not(.blank){background:var(--hover);}
+  .cal-day.blank{cursor:default;}
+  .cal-day.muted{color:#C4B5A2;}
+  .cal-day.today{border-color:var(--accent);font-weight:700;}
+  .cal-day.selected{background:var(--accent);color:#fff;font-weight:700;}
+  .cal-day.selected .cal-dot{background:#fff;}
+  .cal-dots{display:flex;gap:3px;height:5px;align-items:center;}
+  .cal-dot{display:inline-block;flex:0 0 auto;width:5px;height:5px;border-radius:50%;}
+  .cal-dot.macro{background:var(--accent);}
+  .cal-dot.kr{background:var(--accent3);}
+  .cal-dot.earn{background:var(--accent2);}
+  .cal-detail{margin-top:14px;border-top:1px solid var(--panel-border);padding-top:12px;}
+  .cal-detail-date{font-size:13px;font-weight:600;margin-bottom:8px;}
+  .cal-detail ul{list-style:none;margin:0;padding:0;font-size:13px;max-height:260px;overflow-y:auto;}
+  .cal-detail li{display:flex;align-items:baseline;gap:8px;padding:6px 0;}
+  .cal-detail li + li{border-top:1px solid var(--panel-border);}
+  .cal-tag{flex:0 0 auto;font-size:10px;padding:2px 6px;border-radius:5px;border:1px solid currentColor;line-height:1.4;}
+  .cal-tag.macro{color:var(--accent);}
+  .cal-tag.kr{color:var(--accent3);}
+  .cal-tag.earn{color:var(--accent2);}
+  .cal-hour{color:var(--sub);font-size:11px;}
+  .cal-detail .empty{color:var(--sub);font-size:12px;padding:6px 0;}
+  .cal-legend{display:flex;gap:14px;margin-top:10px;font-size:11px;color:var(--sub);flex-wrap:wrap;}
+  .cal-legend span{display:flex;align-items:center;gap:5px;}
+
+  /* ---------- 뉴스 ---------- */
+  .news-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
+  .news-head h2{margin:0;}
+  .news-sort{display:flex;gap:6px;}
+  .news-sort button{
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;font-family:inherit;
+  }
+  .news-sort button:hover{background:var(--hover);color:var(--text);}
+  .news-sort button.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
+  .news-rank{font-size:10px;padding:1px 5px;border-radius:4px;margin-right:6px;border:1px solid currentColor;line-height:1.5;white-space:nowrap;}
+  .news-rank.top{color:var(--up);}
+  .news-rank.high{color:var(--accent);}
+  .news-tags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+  .news-tags button{
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    font-size:12px;padding:6px 14px;border-radius:999px;cursor:pointer;font-family:inherit;
+  }
+  .news-tags button:hover{background:var(--hover);color:var(--text);}
+  .news-tags button.active{background:var(--accent2);color:#fff;border-color:var(--accent2);font-weight:600;}
+  .news-item{padding:12px 0;border-bottom:1px solid var(--panel-border);}
+  .news-item:last-child{border-bottom:none;}
+  .news-item a{color:var(--text);text-decoration:none;font-size:14px;line-height:1.5;display:block;}
+  .news-item a:hover{color:var(--accent);}
+  .news-item .meta{color:var(--sub);font-size:11px;margin-top:5px;}
+
+  /* ---------- 준비 중 화면 ---------- */
+  .soon{text-align:center;padding:54px 20px;color:var(--sub);}
+  .soon .soon-icon{font-size:38px;margin-bottom:14px;}
+  .soon h3{color:var(--text);font-size:16px;margin:0 0 8px;}
+  .soon p{margin:0 auto;font-size:13px;line-height:1.8;max-width:460px;}
+
+  /* ---------- 반응형 ---------- */
+  @media (max-width: 1100px){
+    .grid2{grid-template-columns:1fr;}
+  }
+  @media (max-width: 820px){
+    .app{flex-direction:column;}
+    .sidebar{
+      position:static;height:auto;flex:none;width:100%;
+      flex-direction:row;align-items:center;gap:4px;overflow-x:auto;padding:12px;
+      border-right:none;border-bottom:1px solid var(--panel-border);
+    }
+    .brand{padding:0 12px 0 4px;}
+    .brand-text .tagline{display:none;}
+    .nav{display:flex;gap:4px;}
+    .nav a{white-space:nowrap;margin-bottom:0;}
+    .nav a span.nav-label{display:none;}
+    .side-note{display:none;}
+    .topbar{flex-wrap:wrap;padding:12px 16px;}
+    .content{padding:16px 16px 32px;}
+  }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-  <!-- ⚠️ 여기에 배포한 Google Apps Script 웹 앱 URL을 넣으세요 -->
-  <script>
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbzmBT3V0ZYu5gGmNpQSU0L963JylyfhqHgqlz0QHfJzgwr5bkqJGhnX1mRIg3ReBGgb/exec";
-  </script>
+<!-- ⚠️ 여기에 배포한 Google Apps Script 웹 앱 URL을 넣으세요 -->
+<script>
+  const GAS_URL = "https://script.google.com/macros/s/AKfycbzmBT3V0ZYu5gGmNpQSU0L963JylyfhqHgqlz0QHfJzgwr5bkqJGhnX1mRIg3ReBGgb/exec";
+</script>
 
-  <header>
-    <div>
-      <div class="logo"><span class="ewe">Ewe</span><span class="quity">Quity</span></div>
-      <div class="subtitle">매일 아침 경제 브리핑 대시보드</div>
-    </div>
-    <div class="updated-wrap">
-      <div class="updated">마지막 업데이트<br><b id="updatedAt">-</b></div>
-      <button id="refreshBtn" class="refresh-btn" type="button" title="캐시를 건너뛰고 지금 바로 새 데이터를 가져옵니다">🔄 새로고침</button>
-    </div>
-  </header>
+<div class="app">
 
-  <div class="setup-banner" id="setupBanner">
-    ⚠️ 아직 GAS_URL이 설정되지 않았어요. index.html 상단의 <code>GAS_URL</code> 값을
-    배포한 Google Apps Script 웹 앱 주소로 바꿔주세요. 지금은 화면 확인용 <b>목업 데이터</b>로 표시 중입니다.
-    (배포 방법은 배포_가이드.md 참고)
-  </div>
-
-  <!-- AI 브리핑. 저장된 브리핑이 없으면(키 미설정/트리거 미실행) 통째로 숨긴다. -->
-  <section class="panel briefing" id="briefingPanel" style="display:none;">
-    <div class="briefing-head">
-      <h2>오늘의 브리핑</h2>
-      <span class="briefing-badge">AI</span>
-      <span class="briefing-stale" id="briefingStale">오래된 브리핑</span>
-    </div>
-    <p class="briefing-text" id="briefingText"></p>
-    <div class="briefing-tags" id="briefingTags"></div>
-    <div class="briefing-sectors" id="briefingSectors"></div>
-  </section>
-
-  <section class="cards" id="cards">
-    <div class="card"><div class="label">기준금리 (한/미)</div><div class="value">불러오는 중…</div></div>
-    <div class="card"><div class="label">USD-KRW 환율</div><div class="value">불러오는 중…</div></div>
-    <div class="card"><div class="label">국제유가 (WTI)</div><div class="value">불러오는 중…</div></div>
-    <div class="card"><div class="label">코스피</div><div class="value">불러오는 중…</div></div>
-    <div class="card"><div class="label">나스닥</div><div class="value">불러오는 중…</div></div>
-    <div class="card"><div class="label">금 (Gold)</div><div class="value">불러오는 중…</div></div>
-    <div class="card"><div class="label">비트코인</div><div class="value">불러오는 중…</div></div>
-  </section>
-
-  <section class="panel">
-    <h2>종목 검색</h2>
-    <div class="search-box">
-      <input id="quoteInput" type="text" placeholder="종목명 또는 코드 입력 (예: 삼성전자, 애플, AAPL, 005930.KS)">
-      <button id="quoteBtn">조회</button>
-    </div>
-    <div class="search-hint">종목명만 입력해도 자동으로 코드를 찾아서 조회해요. (드물게 못 찾는 종목은 정확한 코드로 입력해주세요)</div>
-    <div class="search-result" id="quoteResult"></div>
-  </section>
-
-  <section class="panel">
-    <div class="watch-head">
-      <h2>관심종목</h2>
-      <span class="watch-count" id="watchCount"></span>
-    </div>
-    <div class="watch-grid" id="watchGrid"></div>
-    <div class="watch-empty" id="watchEmpty">
-      아직 담은 종목이 없어요. 위 <b>종목 검색</b>으로 조회한 뒤 <b>관심종목에 추가</b>를 누르면 여기에 시세 카드로 쌓입니다.
-    </div>
-  </section>
-
-  <section class="panel">
-    <div class="rank-head">
-      <h2>종목 순위 <span class="watch-count">코스피 상위 100</span></h2>
-      <div class="rank-tabs" id="rankTabs">
-        <button data-view="cap" class="active">시가총액</button>
-        <button data-view="up">상승률</button>
-        <button data-view="down">하락률</button>
+  <aside class="sidebar">
+    <div class="brand">
+      <!-- 마스코트 일러스트가 준비되면 이 자리에 <img>로 넣으면 된다. -->
+      <div class="brand-mark">🐑</div>
+      <div class="brand-text">
+        <div class="logo"><span class="ewe">Ewe</span><span class="quity">Quity</span></div>
+        <div class="tagline">SMARTER INVESTING, TOGETHER</div>
       </div>
     </div>
-    <div class="rank-wrap">
-      <table class="rank">
-        <thead>
-          <tr>
-            <th class="c-rank">#</th>
-            <th class="c-name">종목</th>
-            <th>현재가</th>
-            <th>등락률</th>
-            <th class="c-cap">시가총액</th>
-          </tr>
-        </thead>
-        <tbody id="rankBody">
-          <tr><td colspan="5" class="rank-empty">불러오는 중…</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
 
-  <section class="grid2">
-    <div class="panel">
-      <h2>지표 히스토리 — 코스피 vs 나스닥</h2>
-      <div class="range-btns">
-        <button data-range="1M">1M</button>
-        <button data-range="3M" class="active">3M</button>
-        <button data-range="1Y">1Y</button>
-      </div>
-      <canvas id="historyChart"></canvas>
+    <!-- href의 해시가 곧 페이지 id다(#/dashboard → page-dashboard) -->
+    <nav class="nav" id="nav">
+      <a href="#/dashboard"><span class="nav-icon">⌂</span><span class="nav-label">대시보드</span></a>
+      <a href="#/watchlist"><span class="nav-icon">☆</span><span class="nav-label">관심 종목</span></a>
+      <a href="#/market"><span class="nav-icon">▤</span><span class="nav-label">시장 지표</span></a>
+      <a href="#/search"><span class="nav-icon">⌕</span><span class="nav-label">종목 검색</span></a>
+      <a href="#/news"><span class="nav-icon">▦</span><span class="nav-label">뉴스</span></a>
+      <a href="#/calendar"><span class="nav-icon">▩</span><span class="nav-label">캘린더</span></a>
+      <a href="#/portfolio"><span class="nav-icon">◔</span><span class="nav-label">포트폴리오</span></a>
+      <a href="#/report"><span class="nav-icon">▣</span><span class="nav-label">리포트</span></a>
+      <a href="#/settings"><span class="nav-icon">⚙</span><span class="nav-label">설정</span></a>
+    </nav>
+
+    <div class="side-note">
+      <b>Smarter Investing, Together</b>
+      모든 데이터는 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다.
     </div>
-    <div class="panel">
-      <h2>경제 캘린더</h2>
-      <div class="cal-head">
-        <div class="cal-title" id="calTitle">불러오는 중…</div>
-        <div class="cal-nav">
-          <button type="button" id="calPrev" aria-label="이전 달">‹</button>
-          <button type="button" id="calNext" aria-label="다음 달">›</button>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="search-box">
+        <input id="quoteInput" type="text" placeholder="종목명 또는 코드를 입력하세요 (예: 삼성전자, 005930.KS)">
+        <button id="quoteBtn">조회</button>
+      </div>
+      <div class="updated-wrap">
+        <div class="updated">마지막 업데이트<br><b id="updatedAt">-</b></div>
+        <button id="refreshBtn" class="refresh-btn" type="button" title="캐시를 건너뛰고 지금 바로 새 데이터를 가져옵니다">🔄 새로고침</button>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <div class="setup-banner" id="setupBanner">
+        ⚠️ 아직 GAS_URL이 설정되지 않았어요. index.html 상단의 <code>GAS_URL</code> 값을
+        배포한 Google Apps Script 웹 앱 주소로 바꿔주세요. 지금은 화면 확인용 <b>목업 데이터</b>로 표시 중입니다.
+        (배포 방법은 배포_가이드.md 참고)
+      </div>
+
+      <!-- ========== 대시보드 ========== -->
+      <section class="page" id="page-dashboard">
+        <div class="page-head">
+          <h1>대시보드</h1>
+          <p>오늘의 시장 요약과 주요 지표를 한눈에 확인하세요.</p>
         </div>
-      </div>
-      <div class="cal-grid" id="calGrid"></div>
-      <div class="cal-legend">
-        <span><i class="cal-dot macro"></i>지표 발표</span>
-        <span><i class="cal-dot kr"></i>국내 실적</span>
-        <span><i class="cal-dot earn"></i>해외 실적</span>
-      </div>
-      <div class="cal-detail" id="calDetail"></div>
-    </div>
-  </section>
 
-  <section class="panel">
-    <div class="news-head">
-      <h2>오늘의 경제 뉴스</h2>
-      <!-- 중요도 점수는 AI 브리핑이 같이 만들어준다. 점수가 없으면 이 토글은 숨긴다. -->
-      <div class="news-sort" id="newsSort" style="display:none;">
-        <button data-sort="importance" class="active">중요도순</button>
-        <button data-sort="recent">최신순</button>
-      </div>
-    </div>
-    <div class="news-tags" id="newsTags">
-      <button data-cat="all" class="active">전체</button>
-      <button data-cat="world">세계경제</button>
-      <button data-cat="domestic">국내경제</button>
-      <button data-cat="politics_domestic">국내정세</button>
-      <button data-cat="politics_intl">국제정세</button>
-    </div>
-    <div class="news-list" id="newsList">
-      <div class="loading">불러오는 중…</div>
-    </div>
-  </section>
+        <!-- AI 브리핑. 저장된 브리핑이 없으면(키 미설정/트리거 미실행) 통째로 숨긴다. -->
+        <section class="panel briefing" id="briefingPanel" style="display:none;">
+          <div class="briefing-head">
+            <h2>오늘의 브리핑</h2>
+            <span class="briefing-badge">AI</span>
+            <span class="briefing-stale" id="briefingStale">오래된 브리핑</span>
+          </div>
+          <p class="briefing-text" id="briefingText"></p>
+          <div class="briefing-tags" id="briefingTags"></div>
+          <div class="briefing-sectors" id="briefingSectors"></div>
+        </section>
 
+        <section class="cards" id="cards">
+          <div class="card"><div class="label">기준금리 (한/미)</div><div class="value">불러오는 중…</div></div>
+          <div class="card"><div class="label">USD-KRW 환율</div><div class="value">불러오는 중…</div></div>
+          <div class="card"><div class="label">국제유가 (WTI)</div><div class="value">불러오는 중…</div></div>
+          <div class="card"><div class="label">코스피</div><div class="value">불러오는 중…</div></div>
+          <div class="card"><div class="label">나스닥</div><div class="value">불러오는 중…</div></div>
+          <div class="card"><div class="label">금 (Gold)</div><div class="value">불러오는 중…</div></div>
+          <div class="card"><div class="label">비트코인</div><div class="value">불러오는 중…</div></div>
+        </section>
+
+        <div class="grid2">
+          <div class="panel">
+            <h2>지표 히스토리 — 코스피 vs 나스닥</h2>
+            <div class="range-btns">
+              <button data-range="1M">1M</button>
+              <button data-range="3M" class="active">3M</button>
+              <button data-range="1Y">1Y</button>
+            </div>
+            <canvas id="historyChart"></canvas>
+          </div>
+          <div class="panel">
+            <div class="watch-head">
+              <h2>내 관심 종목</h2>
+              <a href="#/watchlist" style="font-size:12px;color:var(--sub);text-decoration:none;">전체 보기 ›</a>
+            </div>
+            <!-- 관심종목 카드는 '관심 종목' 페이지에만 두고, 여기서는 요약 목록만 보여준다. -->
+            <div id="watchMini"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 관심 종목 ========== -->
+      <section class="page" id="page-watchlist">
+        <div class="page-head">
+          <h1>관심 종목</h1>
+          <p>담아둔 종목의 현재가와 등락률을 확인하세요.</p>
+        </div>
+        <section class="panel">
+          <div class="watch-head">
+            <h2>관심종목</h2>
+            <span class="watch-count" id="watchCount"></span>
+          </div>
+          <div class="watch-grid" id="watchGrid"></div>
+          <div class="watch-empty" id="watchEmpty">
+            아직 담은 종목이 없어요. <b>종목 검색</b>에서 조회한 뒤 <b>관심종목에 추가</b>를 누르면 여기에 시세 카드로 쌓입니다.
+          </div>
+        </section>
+      </section>
+
+      <!-- ========== 시장 지표 ========== -->
+      <section class="page" id="page-market">
+        <div class="page-head">
+          <h1>시장 지표</h1>
+          <p>코스피 상위 100종목의 시가총액과 등락률 순위입니다.</p>
+        </div>
+        <section class="panel">
+          <div class="rank-head">
+            <h2>종목 순위 <span class="watch-count">코스피 상위 100</span></h2>
+            <div class="rank-tabs" id="rankTabs">
+              <button data-view="cap" class="active">시가총액</button>
+              <button data-view="up">상승률</button>
+              <button data-view="down">하락률</button>
+            </div>
+          </div>
+          <div class="rank-wrap">
+            <table class="rank">
+              <thead>
+                <tr>
+                  <th class="c-rank">#</th>
+                  <th class="c-name">종목</th>
+                  <th>현재가</th>
+                  <th>등락률</th>
+                  <th class="c-cap">시가총액</th>
+                </tr>
+              </thead>
+              <tbody id="rankBody">
+                <tr><td colspan="5" class="rank-empty">불러오는 중…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========== 종목 검색 ========== -->
+      <section class="page" id="page-search">
+        <div class="page-head">
+          <h1>종목 검색</h1>
+          <p>종목명만 입력해도 자동으로 코드를 찾아서 조회해요.</p>
+        </div>
+        <section class="panel">
+          <h2>검색 결과</h2>
+          <div class="search-hint">
+            위쪽 검색창에 종목명이나 코드를 입력하세요. (예: 삼성전자, 애플, AAPL, 005930.KS)
+            드물게 못 찾는 종목은 정확한 코드로 입력해주세요.
+          </div>
+          <div class="search-result" id="quoteResult"></div>
+        </section>
+      </section>
+
+      <!-- ========== 뉴스 ========== -->
+      <section class="page" id="page-news">
+        <div class="page-head">
+          <h1>뉴스</h1>
+          <p>주요 경제 뉴스를 중요도순 또는 최신순으로 확인하세요.</p>
+        </div>
+        <section class="panel">
+          <div class="news-head">
+            <h2>오늘의 경제 뉴스</h2>
+            <!-- 중요도 점수는 AI 브리핑이 같이 만들어준다. 점수가 없으면 이 토글은 숨긴다. -->
+            <div class="news-sort" id="newsSort" style="display:none;">
+              <button data-sort="importance" class="active">중요도순</button>
+              <button data-sort="recent">최신순</button>
+            </div>
+          </div>
+          <div class="news-tags" id="newsTags">
+            <button data-cat="all" class="active">전체</button>
+            <button data-cat="world">세계경제</button>
+            <button data-cat="domestic">국내경제</button>
+            <button data-cat="politics_domestic">국내정세</button>
+            <button data-cat="politics_intl">국제정세</button>
+          </div>
+          <div class="news-list" id="newsList">
+            <div class="loading">불러오는 중…</div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========== 캘린더 ========== -->
+      <section class="page" id="page-calendar">
+        <div class="page-head">
+          <h1>경제 캘린더</h1>
+          <p>지표 발표일과 국내외 실적 발표 일정입니다. 날짜를 누르면 그날 일정이 아래에 표시됩니다.</p>
+        </div>
+        <section class="panel">
+          <div class="cal-head">
+            <div class="cal-title" id="calTitle">불러오는 중…</div>
+            <div class="cal-nav">
+              <button type="button" id="calPrev" aria-label="이전 달">‹</button>
+              <button type="button" id="calNext" aria-label="다음 달">›</button>
+            </div>
+          </div>
+          <div class="cal-grid" id="calGrid"></div>
+          <div class="cal-legend">
+            <span><i class="cal-dot macro"></i>지표 발표</span>
+            <span><i class="cal-dot kr"></i>국내 실적</span>
+            <span><i class="cal-dot earn"></i>해외 실적</span>
+          </div>
+          <div class="cal-detail" id="calDetail"></div>
+        </section>
+      </section>
+
+      <!-- ========== 포트폴리오 (준비 중) ========== -->
+      <section class="page" id="page-portfolio">
+        <div class="page-head">
+          <h1>포트폴리오</h1>
+          <p>보유 종목의 수익률과 자산 비중을 확인하는 화면입니다.</p>
+        </div>
+        <section class="panel">
+          <div class="soon">
+            <div class="soon-icon">◔</div>
+            <h3>준비 중입니다</h3>
+            <p>
+              보유 종목·수량·매입가를 입력하면 총자산과 수익률, 자산 비중을 계산해 보여줄 예정입니다.
+              시세 조회는 이미 갖춰져 있어서, 입력 화면만 만들면 바로 동작합니다.
+            </p>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========== 리포트 (준비 중) ========== -->
+      <section class="page" id="page-report">
+        <div class="page-head">
+          <h1>리포트</h1>
+          <p>기간별 시장 요약과 기록을 모아 보는 화면입니다.</p>
+        </div>
+        <section class="panel">
+          <div class="soon">
+            <div class="soon-icon">▣</div>
+            <h3>준비 중입니다</h3>
+            <p>
+              매일 만들어지는 AI 브리핑을 쌓아두고 주간·월간으로 돌아보는 화면을 계획하고 있습니다.
+              지금은 브리핑이 최신 1건만 저장되고 있어서, 기록을 남기는 작업이 먼저 필요합니다.
+            </p>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========== 설정 ========== -->
+      <section class="page" id="page-settings">
+        <div class="page-head">
+          <h1>설정</h1>
+          <p>연결 상태와 저장된 데이터를 확인합니다.</p>
+        </div>
+        <section class="panel">
+          <h2>연결 상태</h2>
+          <div id="settingsInfo" class="search-hint"></div>
+        </section>
+        <section class="panel">
+          <h2>저장된 데이터</h2>
+          <div class="search-hint" style="margin-bottom:12px;">
+            관심종목은 이 브라우저에만 저장됩니다. 다른 기기·브라우저와는 공유되지 않습니다.
+          </div>
+          <button id="clearWatchBtn" class="refresh-btn" type="button">관심종목 전체 비우기</button>
+        </section>
+      </section>
+
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1240,6 +1386,7 @@ function removeFromWatchlist(symbol) {
 }
 
 function renderWatchlist(quotesBySymbol) {
+  renderWatchMini(quotesBySymbol); // 대시보드의 요약 목록도 같이 갱신
   const grid = document.getElementById('watchGrid');
   const empty = document.getElementById('watchEmpty');
   const count = document.getElementById('watchCount');
@@ -1325,6 +1472,10 @@ async function searchQuote() {
   const query = input.value.trim();
   if (!query) return;
 
+  // 검색창은 상단 바에 있어서 어느 페이지에서도 누를 수 있다. 결과는 검색 페이지에만
+  // 있으므로 그쪽으로 옮겨준다(해시를 바꾸면 hashchange가 페이지를 전환한다).
+  if (currentPage() !== 'search') location.hash = '#/search';
+
   resultEl.className = 'search-result show';
   resultEl.innerHTML = '<div class="loading">조회 중…</div>';
 
@@ -1382,8 +1533,96 @@ document.querySelectorAll('#newsSort button').forEach(function (btn) {
   });
 });
 
+// ---------- 페이지 전환 (해시 라우터) ----------
+// 정적 HTML 한 장이라 서버 라우팅이 없다. 해시(#/dashboard)로 화면만 갈아끼운다.
+// 새로고침해도 보던 페이지가 유지되고, 뒤로가기도 자연히 동작한다.
+const PAGES = ['dashboard', 'watchlist', 'market', 'search', 'news', 'calendar', 'portfolio', 'report', 'settings'];
+
+function currentPage() {
+  const name = (location.hash || '').replace(/^#\/?/, '');
+  return PAGES.indexOf(name) !== -1 ? name : 'dashboard';
+}
+
+function showPage(name) {
+  PAGES.forEach(function (p) {
+    const el = document.getElementById('page-' + p);
+    if (el) el.classList.toggle('active', p === name);
+  });
+  document.querySelectorAll('#nav a').forEach(function (a) {
+    a.classList.toggle('active', a.getAttribute('href') === '#/' + name);
+  });
+  // 차트는 숨겨진 동안 캔버스 크기가 0이라 제대로 안 그려진다. 대시보드로 돌아오면 다시 그린다.
+  if (name === 'dashboard' && lastHistoryData) renderChart(lastHistoryData);
+  if (name === 'settings') renderSettings();
+  window.scrollTo(0, 0);
+}
+
+window.addEventListener('hashchange', function () { showPage(currentPage()); });
+
+// ---------- 대시보드의 관심종목 요약 ----------
+// 전체 카드는 '관심 종목' 페이지에 있고, 대시보드에는 상위 5개만 목록으로 보여준다.
+function renderWatchMini(quotesBySymbol) {
+  const el = document.getElementById('watchMini');
+  if (!el) return;
+  if (!watchlist.length) {
+    el.innerHTML = '<div class="empty">아직 담은 종목이 없어요. 위 검색창에서 조회한 뒤 추가해보세요.</div>';
+    return;
+  }
+  el.innerHTML = watchlist.slice(0, 5).map(function (w) {
+    const entry = quotesBySymbol[w.symbol];
+    let right = '<span class="change flat">…</span>';
+    let price = '';
+    if (entry && entry.quote) {
+      const q = entry.quote;
+      const cls = changeClass(q.changePct);
+      price = fmtNum(q.value, 2);
+      right = '<span class="change ' + cls + '">' + changeArrow(q.changePct) + ' ' +
+        fmtNum(Math.abs(q.changePct), 2) + '%</span>';
+    } else if (entry) {
+      right = '<span class="change flat">–</span>';
+    }
+    return '<div class="news-item" style="display:flex;align-items:center;gap:10px;padding:10px 0;">' +
+      '<div style="flex:1;min-width:0;">' +
+        '<div style="font-size:13.5px;">' + esc_(w.name || w.symbol) + '</div>' +
+        '<div class="meta">' + esc_(w.symbol) + '</div>' +
+      '</div>' +
+      '<div style="font-size:14px;font-weight:600;">' + price + '</div>' +
+      '<div style="flex:0 0 74px;text-align:right;">' + right + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+// ---------- 설정 화면 ----------
+function renderSettings() {
+  const el = document.getElementById('settingsInfo');
+  if (!el) return;
+  const b = briefingCache || {};
+  const rows = [
+    ['백엔드 연결', isConfigured() ? '✅ 연결됨' : '❌ GAS_URL 미설정 (목업 데이터 표시 중)'],
+    ['AI 브리핑', b.summary ? ('✅ ' + (b.stale ? '오래됨 · ' : '') + new Date(b.at).toLocaleString('ko-KR')) : '❌ 없음 (ANTHROPIC_API_KEY 미설정이거나 트리거 미실행)'],
+    ['뉴스 중요도 채점', Object.keys(b.importance || {}).length + '건'],
+    ['관심종목', watchlist.length + ' / ' + WATCHLIST_MAX + '개 (이 브라우저에만 저장)'],
+    ['종목 순위', marketCache.length + '종목']
+  ];
+  el.innerHTML = rows.map(function (r) {
+    return '<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid var(--panel-border);">' +
+      '<span style="flex:0 0 140px;color:var(--sub);">' + r[0] + '</span>' +
+      '<span style="flex:1;color:var(--text);">' + esc_(r[1]) + '</span></div>';
+  }).join('');
+}
+
+document.getElementById('clearWatchBtn').addEventListener('click', function () {
+  if (!watchlist.length) { alert('비울 관심종목이 없어요.'); return; }
+  if (!confirm('관심종목 ' + watchlist.length + '개를 모두 지울까요? 되돌릴 수 없어요.')) return;
+  watchlist = [];
+  saveWatchlist();
+  loadWatchQuotes();
+  renderSettings();
+});
+
 // ---------- 초기 로드 + 자동 갱신 ----------
 function loadAll() {
+  showPage(currentPage());
   setupBannerCheck();
   loadRates();
   loadHistory();

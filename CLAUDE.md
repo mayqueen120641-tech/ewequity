@@ -7,6 +7,12 @@
 
 - `Code.js` — 백엔드. Google Apps Script(GAS), API 5종을 프록시 + 캐싱. `clasp`로 관리.
 - `index.html` — 프론트엔드. 단일 정적 HTML (목업 데이터로도 바로 열림).
+  크림 톤 테마 + 좌측 사이드바. 페이지는 **해시 라우팅**(`#/dashboard` 등)으로 전환한다 —
+  서버 라우팅이 없는 정적 파일이라 화면만 갈아끼운다. 페이지를 추가하려면
+  ① 사이드바 `<a href="#/xxx">` ② `<section class="page" id="page-xxx">` ③ JS의 `PAGES` 배열,
+  **세 곳을 같이** 고쳐야 한다.
+  ⚠️ **차트는 숨겨진 동안 캔버스 폭이 0이라 제대로 안 그려진다.** 대시보드로 돌아올 때
+  `showPage()`가 `renderChart()`를 다시 부른다 — 차트를 다른 페이지로 옮기면 이 처리도 옮길 것.
 - `docs/` — API 발급 가이드, 배포 가이드, 진행보고서(docx).
 - `README.md` — 프로젝트 개요, `SETUP_GUIDE.md` — 로컬 환경 세팅 절차 (이미 완료된 상태).
 
