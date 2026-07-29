@@ -1015,12 +1015,49 @@ var AI_BRIEFING_MAX_AGE_MS_ = 8 * 60 * 60 * 1000;
 // 파싱 실패를 걱정하지 않아도 된다. 주의: 구조화된 출력은 minimum/maximum 같은 수치 제약을
 // 지원하지 않으므로 점수 범위는 enum으로 표현하고, 모든 object에 additionalProperties:false와
 // required가 있어야 한다.
+// 카테고리별 한 줄 요약에 쓰는 고정 키. 프론트가 이 순서대로 그리고, 스키마의 enum으로도
+// 쓰여서 모델이 임의의 카테고리를 만들어내지 못하게 막는다(라벨은 프론트가 붙인다).
+var SECTOR_KEYS_ = ['kospi', 'nasdaq', 'fx', 'oil', 'crypto', 'domestic', 'global'];
+
 var BRIEFING_SCHEMA_ = {
   type: 'object',
   properties: {
     summary: {
       type: 'string',
       description: '오늘의 경제 브리핑. 한국어 3~4문장. 지표 흐름과 주요 뉴스를 엮어서 작성.'
+    },
+    hashtags: {
+      type: 'array',
+      description: '오늘 시장을 관통하는 키워드 5~8개. "#" 없이 단어만. ' +
+        '"경제"처럼 뻔한 말 말고 "반도체급락"·"FOMC대기"처럼 오늘을 특정하는 말로.',
+      items: { type: 'string' }
+    },
+    sectors: {
+      type: 'array',
+      description: '카테고리별 한 줄 요약. 아래 7개 key 전부에 대해 하나씩, 총 7개.',
+      items: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            enum: SECTOR_KEYS_,
+            description: 'kospi=코스피, nasdaq=나스닥, fx=원/달러 환율, oil=국제유가, ' +
+              'crypto=코인, domestic=국내 경제 전반, global=해외 경제 전반'
+          },
+          line: {
+            type: 'string',
+            description: '그 카테고리의 오늘 흐름을 한국어 한 문장(40자 내외)으로. ' +
+              '수치가 있으면 넣고, 없으면 뉴스에서 읽히는 분위기로.'
+          },
+          tone: {
+            type: 'string',
+            enum: ['up', 'down', 'flat'],
+            description: '그 카테고리가 오늘 오름세면 up, 내림세면 down, 뚜렷하지 않으면 flat'
+          }
+        },
+        required: ['key', 'line', 'tone'],
+        additionalProperties: false
+      }
     },
     rankings: {
       type: 'array',
@@ -1037,21 +1074,25 @@ var BRIEFING_SCHEMA_ = {
       }
     }
   },
-  required: ['summary', 'rankings'],
+  required: ['summary', 'hashtags', 'sectors', 'rankings'],
   additionalProperties: false
 };
 
 /** doGet에서 읽는 함수. 저장된 브리핑을 그대로 돌려준다(외부 호출 없음 = 즉시 응답). */
 function getBriefing() {
   const raw = PropertiesService.getScriptProperties().getProperty(AI_BRIEFING_PROP_);
-  if (!raw) return { summary: null, importance: {} };
+  const empty = { summary: null, hashtags: [], sectors: [], importance: {} };
+  if (!raw) return empty;
   try {
     const parsed = JSON.parse(raw);
+    // 예전 형식(해시태그/섹터가 없던 시절)이 저장돼 있어도 프론트가 깨지지 않게 채워준다.
     parsed.importance = parsed.importance || {};
+    parsed.hashtags = parsed.hashtags || [];
+    parsed.sectors = parsed.sectors || [];
     parsed.stale = !!(parsed.at && (Date.now() - new Date(parsed.at).getTime()) > AI_BRIEFING_MAX_AGE_MS_);
     return parsed;
   } catch (err) {
-    return { summary: null, importance: {} };
+    return empty;
   }
 }
 
@@ -1083,12 +1124,32 @@ function refreshAiBriefing() {
 
   // 스크립트 속성은 값 하나당 9KB 제한이라 reason은 저장하지 않는다(점수만 있으면 정렬은 된다).
   // 그래도 스키마에는 남겨둔다 — 이유를 함께 쓰게 하면 점수 자체가 더 정확해진다.
+  // 해시태그/섹터도 같은 이유로 길이를 잘라둔다(한글은 JSON에서 문자당 6바이트로 불어난다).
+  const hashtags = (result.hashtags || [])
+    .map(function (h) { return String(h).replace(/^#/, '').trim().slice(0, 20); })
+    .filter(Boolean)
+    .slice(0, 8);
+
+  // 모델이 같은 key를 두 번 쓰거나 빠뜨릴 수 있으니 고정 순서로 정리한다.
+  const bySector = {};
+  (result.sectors || []).forEach(function (s) {
+    if (s && SECTOR_KEYS_.indexOf(s.key) !== -1 && !bySector[s.key]) {
+      bySector[s.key] = { key: s.key, line: String(s.line || '').slice(0, 80), tone: s.tone || 'flat' };
+    }
+  });
+  const sectors = SECTOR_KEYS_
+    .map(function (k) { return bySector[k]; })
+    .filter(Boolean);
+
   props.setProperty(AI_BRIEFING_PROP_, JSON.stringify({
     summary: result.summary,
+    hashtags: hashtags,
+    sectors: sectors,
     importance: importance,
     at: new Date().toISOString()
   }));
-  console.log('refreshAiBriefing: 갱신 완료 (뉴스 ' + news.length + '건)');
+  console.log('refreshAiBriefing: 갱신 완료 (뉴스 ' + news.length + '건, 섹터 ' +
+    sectors.length + '/' + SECTOR_KEYS_.length + ', 태그 ' + hashtags.length + ')');
 }
 
 // 카테고리별로 나뉜 뉴스를 한 데 모은다. 'all'은 다른 카테고리와 겹치므로 링크로 중복 제거.
@@ -1116,6 +1177,12 @@ function callClaudeBriefing_(apiKey, rates, news) {
     '[지표]\n' + JSON.stringify(rates) + '\n\n' +
     '[뉴스 헤드라인]\n' + headlines + '\n\n' +
     'summary에는 지표 흐름과 주요 뉴스를 엮어 한국어 3~4문장 브리핑을 써줘.\n' +
+    'hashtags에는 오늘 시장을 관통하는 키워드 5~8개를 뽑아줘. "경제"·"증시"처럼 아무 날에나 ' +
+    '쓸 수 있는 말 말고, "반도체급락"·"FOMC대기"처럼 오늘을 특정하는 말로.\n' +
+    'sectors에는 ' + SECTOR_KEYS_.join(', ') + ' 7개 전부에 대해 한 줄씩 써줘. ' +
+    '지표에 수치가 있는 항목(코스피·나스닥·환율·유가·코인)은 수치를 넣고, ' +
+    '국내/해외 전반은 뉴스에서 읽히는 분위기로 요약해. 뉴스에 근거가 없으면 무리해서 ' +
+    '지어내지 말고 "특별한 움직임 없음" 식으로 담백하게 써.\n' +
     'rankings에는 위 뉴스 ' + news.length + '건 **전부**에 대해 번호(id)와 중요도(1~5)를 매겨줘.\n' +
     '중요도는 "이 뉴스가 한국 투자자의 판단을 실제로 바꿀 만한가"를 기준으로 봐. ' +
     '금리·환율·물가처럼 시장 전반에 영향을 주는 뉴스가 높고, 개별 홍보성·단신 기사는 낮아.';

@@ -172,6 +172,22 @@
   .briefing.is-stale .briefing-stale{display:inline;}
   .briefing-text{margin:10px 0 0;font-size:14px;line-height:1.75;color:var(--text);}
 
+  .briefing-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
+  .briefing-tags span{
+    font-size:11px;color:var(--accent2);background:#0d1729;
+    border:1px solid var(--panel-border);border-radius:999px;padding:3px 9px;
+  }
+
+  /* 카테고리별 한 줄 요약 — 넓으면 2열, 좁으면 1열 */
+  .briefing-sectors{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:2px 18px;margin-top:14px;padding-top:12px;border-top:1px solid var(--panel-border);
+  }
+  .sector-row{display:flex;align-items:baseline;gap:8px;padding:5px 0;font-size:13px;min-width:0;}
+  .sector-name{flex:0 0 52px;color:var(--sub);font-size:12px;}
+  .sector-tone{flex:0 0 auto;font-size:11px;}
+  .sector-line{flex:1;min-width:0;line-height:1.55;}
+
   /* h2의 아래 여백(.panel h2)을 없앤 만큼 컨테이너가 대신 띄운다. */
   .news-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px;}
   .news-head h2{margin:0;}
@@ -346,6 +362,8 @@
       <span class="briefing-stale" id="briefingStale">오래된 브리핑</span>
     </div>
     <p class="briefing-text" id="briefingText"></p>
+    <div class="briefing-tags" id="briefingTags"></div>
+    <div class="briefing-sectors" id="briefingSectors"></div>
   </section>
 
   <section class="cards" id="cards">
@@ -534,6 +552,16 @@ function mockBriefing() {
   const n = mockNews().items;
   return {
     summary: '기준금리는 한국 2.5%, 미국 3.63%로 동결 흐름이 이어지고 있습니다. 원/달러 환율은 1,465원 부근에서 소폭 하락했고, 코스피는 장중 급락 후 상승 전환하며 변동성이 컸습니다. 국제유가는 배럴당 84달러대로 올라 물가 압력이 다시 부각되는 모습입니다.',
+    hashtags: ['반도체급락', 'FOMC대기', '환율안정', '유가상승', '소비심리악화'],
+    sectors: [
+      { key: 'kospi', tone: 'down', line: '반도체 주도로 9.97% 급락, 변동성 확대' },
+      { key: 'nasdaq', tone: 'down', line: '기술주 약세로 1.3% 하락 마감' },
+      { key: 'fx', tone: 'down', line: '1,465원, 전일 대비 0.9원 하락하며 안정' },
+      { key: 'oil', tone: 'up', line: 'WTI 84.4달러로 상승, 물가 압력 재부각' },
+      { key: 'crypto', tone: 'down', line: '비트코인 6.3만 달러대, 리스크 오프 영향' },
+      { key: 'domestic', tone: 'down', line: '소비심리 위축과 중소기업 부도율 상승' },
+      { key: 'global', tone: 'flat', line: 'PCE 발표 앞두고 관망세 지속' }
+    ],
     // 실제로는 백엔드가 링크별 1~5 점수를 내려준다. 목업에서도 같은 모양으로 만들어야
     // 정렬 토글이 화면 확인용으로 동작한다.
     importance: n.reduce(function (acc, item, i) {
@@ -942,10 +970,31 @@ document.getElementById('calNext').addEventListener('click', function () { shift
 // { summary, importance: { <뉴스 링크>: 1~5 }, at, stale } — 백엔드가 트리거로 미리 만들어둔 값.
 let briefingCache = { summary: null, importance: {} };
 
+// 백엔드는 key만 주고(모델이 임의 카테고리를 만들지 못하게 enum으로 고정) 라벨은 여기서 붙인다.
+const SECTOR_LABELS = {
+  kospi: '코스피', nasdaq: '나스닥', fx: '환율', oil: '유가',
+  crypto: '코인', domestic: '국내', global: '해외'
+};
+
 function renderBriefing(b) {
   const panel = document.getElementById('briefingPanel');
   if (!b || !b.summary) { panel.style.display = 'none'; return; }
   document.getElementById('briefingText').textContent = b.summary;
+
+  document.getElementById('briefingTags').innerHTML = (b.hashtags || [])
+    .map(function (h) { return '<span>#' + esc_(h) + '</span>'; }).join('');
+
+  document.getElementById('briefingSectors').innerHTML = (b.sectors || [])
+    .map(function (s) {
+      const cls = s.tone === 'up' ? 'pos' : s.tone === 'down' ? 'neg' : 'flat';
+      const mark = s.tone === 'up' ? '▲' : s.tone === 'down' ? '▼' : '－';
+      return '<div class="sector-row">' +
+        '<span class="sector-name">' + esc_(SECTOR_LABELS[s.key] || s.key) + '</span>' +
+        '<span class="sector-tone change ' + cls + '">' + mark + '</span>' +
+        '<span class="sector-line">' + esc_(s.line || '') + '</span>' +
+        '</div>';
+    }).join('');
+
   panel.classList.toggle('is-stale', !!b.stale);
   panel.style.display = '';
 }
