@@ -27,6 +27,13 @@ function doGet(e) {
       case 'market':
         result = getMarket(noCache);
         break;
+      case 'explain':
+        result = getExplain(
+          (e.parameter && e.parameter.symbol) || '',
+          (e.parameter && e.parameter.name) || '',
+          noCache
+        );
+        break;
       case 'briefing':
         result = getBriefing();
         break;
@@ -1156,6 +1163,222 @@ function refreshAiBriefing() {
   }));
   console.log('refreshAiBriefing: 갱신 완료 (뉴스 ' + news.length + '건, 섹터 ' +
     sectors.length + '/' + SECTOR_KEYS_.length + ', 태그 ' + hashtags.length + ')');
+}
+
+// ================= 6. 종목별 "왜 움직였나" =================
+// 증권사 앱·네이버 증권은 "삼성전자 -13.4%"까지만 보여주고 왜 떨어졌는지는 알려주지 않는다.
+// 그 종목 뉴스를 모아 오늘 등락의 원인을 설명해주는 게 이 프로젝트의 차별점이다.
+//
+// 브리핑과 달리 **사용자가 누를 때만** 호출한다(모든 종목을 미리 만들어둘 수 없으므로).
+// 그래서 종목별로 캐시를 걸어 같은 종목을 반복해서 눌러도 과금이 늘지 않게 한다.
+var EXPLAIN_CACHE_SEC_ = 1800; // 30분
+
+var EXPLAIN_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    explanation: {
+      type: 'string',
+      description: '오늘 이 종목이 왜 그렇게 움직였는지 한국어 2~3문장. 초보자도 이해할 수 있게 ' +
+        '쉬운 말로. 근거가 되는 뉴스가 없으면 추측하지 말고 "뉴스에서 뚜렷한 원인을 찾지 못했다"고 밝힐 것.'
+    },
+    evidence: {
+      type: 'array',
+      description: '설명의 근거가 된 뉴스. 관련 뉴스가 없으면 빈 배열.',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer', description: '입력 뉴스 목록에서의 번호' },
+          note: { type: 'string', description: '이 뉴스가 왜 근거가 되는지 한국어 한 문장' }
+        },
+        required: ['id', 'note'],
+        additionalProperties: false
+      }
+    },
+    confidence: {
+      type: 'string',
+      enum: ['high', 'medium', 'low'],
+      description: '설명의 확신도. 뉴스가 등락을 직접 설명하면 high, 정황만 있으면 medium, ' +
+        '관련 뉴스를 못 찾았으면 low.'
+    }
+  },
+  required: ['explanation', 'evidence', 'confidence'],
+  additionalProperties: false
+};
+
+function getExplain(symbol, name, noCache) {
+  const sym = String(symbol || '').trim();
+  const nm = String(name || '').trim() || sym;
+  if (!sym) return { error: '종목 코드가 없습니다.' };
+  if (sym.length > 40 || nm.length > 60) return { error: '입력이 너무 깁니다.' };
+
+  const cacheKey = 'explain_' + md5_((sym + '|' + nm).toLowerCase());
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+  if (!key) return { error: 'AI 설명 기능은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
+
+  const quote = safe_(function () { return getYahooQuote_(sym); });
+  const news = searchStockNews_(nm);
+  if (!news.length) {
+    return { symbol: sym, name: nm, quote: quote, explanation: null,
+      error: '"' + nm + '" 관련 뉴스를 찾지 못했어요.' };
+  }
+
+  // 개별 종목 뉴스만 보면 "원인을 못 찾겠다"로 끝나는 경우가 많다. 실제로는 시장 전체가
+  // 빠져서 같이 밀린 날이 흔하기 때문 — 그 판단을 할 수 있게 시장 상황을 같이 넘긴다.
+  const result = callClaudeExplain_(key, nm, quote, news, marketContext_());
+  if (!result) return { symbol: sym, name: nm, quote: quote, explanation: null,
+    error: '설명을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  // 링크는 **백엔드가** 붙인다. 모델에게 URL을 쓰게 하면 없는 주소를 지어낼 수 있다.
+  const evidence = (result.evidence || [])
+    .map(function (e) {
+      const item = news[e.id];
+      return item ? { title: item.title, link: item.link, pubDate: item.pubDate, note: e.note } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+
+  const data = {
+    symbol: sym, name: nm, quote: quote,
+    explanation: result.explanation,
+    confidence: result.confidence,
+    evidence: evidence,
+    at: new Date().toISOString()
+  };
+  cachePut_(cacheKey, data, EXPLAIN_CACHE_SEC_);
+  return data;
+}
+
+// 이미 만들어둔 지표와 브리핑에서 "오늘 시장이 어땠는지"를 뽑는다. 추가 호출이 없어 공짜다.
+function marketContext_() {
+  const parts = [];
+  const rates = safe_(getRates);
+  if (rates && !rates.error) {
+    ['kospi', 'nasdaq'].forEach(function (k) {
+      const v = rates[k];
+      if (v && !v.error && v.changePct != null) {
+        parts.push((k === 'kospi' ? '코스피' : '나스닥') + ' ' + v.changePct.toFixed(2) + '%');
+      }
+    });
+  }
+  const brief = getBriefing();
+  return {
+    indices: parts.join(', '),
+    summary: (brief && brief.summary) || ''
+  };
+}
+
+// 종목명으로 네이버 뉴스를 검색한다. 등락 원인을 찾는 게 목적이라 최근 기사만 쓴다.
+// 정확도순(sim)만 쓰면 오늘 벌어진 일이 빠지고, 최신순(date)만 쓰면 이름만 겹치는 기사가
+// 섞인다. 둘을 합쳐서 링크로 중복 제거한다.
+function searchStockNews_(name) {
+  const headers = {
+    'X-Naver-Client-Id': getProp_('NAVER_CLIENT_ID'),
+    'X-Naver-Client-Secret': getProp_('NAVER_CLIENT_SECRET')
+  };
+  const jobs = ['sim', 'date'].map(function (sort) {
+    return {
+      name: sort,
+      url: 'https://openapi.naver.com/v1/search/news.json?query=' + encodeURIComponent(name) +
+        '&display=15&sort=' + sort,
+      headers: headers
+    };
+  });
+
+  const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000; // 최근 3일
+  const out = [];
+  const seen = {};
+  fetchJobsSafe_(jobs).forEach(function (res, i) {
+    try {
+      if (!res || res.getResponseCode() >= 400) throw new Error('조회 실패');
+      (JSON.parse(res.getContentText()).items || []).forEach(function (it) {
+        if (!it.link || seen[it.link]) return;
+        const ts = new Date(it.pubDate).getTime();
+        if (ts && ts < cutoff) return;
+        seen[it.link] = true;
+        out.push({
+          title: stripTags_(it.title),
+          description: stripTags_(it.description),
+          link: it.link,
+          pubDate: it.pubDate
+        });
+      });
+    } catch (err) {
+      console.log('searchStockNews_: ' + jobs[i].name + ' 실패(건너뜀) - ' + err);
+    }
+  });
+  return out.slice(0, 14);
+}
+
+function callClaudeExplain_(apiKey, name, quote, news, market) {
+  const moved = quote && !quote.error && quote.changePct != null
+    ? name + '은(는) 오늘 ' + quote.changePct.toFixed(2) + '% ' +
+      (quote.changePct >= 0 ? '올랐어' : '내렸어') + '(현재가 ' + quote.value + ').'
+    : name + '의 오늘 등락률은 확인되지 않았어.';
+
+  const lines = news.map(function (n, i) {
+    return i + '. ' + n.title + ' — ' + String(n.description || '').slice(0, 100);
+  }).join('\n');
+
+  const ctx = [];
+  if (market && market.indices) ctx.push('오늘 시장: ' + market.indices);
+  if (market && market.summary) ctx.push('오늘 시장 브리핑: ' + market.summary);
+
+  const prompt =
+    moved + '\n\n' +
+    (ctx.length ? '[시장 상황]\n' + ctx.join('\n') + '\n\n' : '') +
+    '[' + name + ' 관련 최근 뉴스]\n' + lines + '\n\n' +
+    'explanation에는 오늘 이 종목이 왜 그렇게 움직였는지 초보 투자자도 이해할 수 있게 ' +
+    '2~3문장으로 설명해줘. 어려운 용어를 쓰면 괄호로 짧게 풀어줘.\n' +
+    'evidence에는 근거가 된 뉴스 번호를 최대 4개까지 골라줘.\n' +
+    '개별 종목 뉴스에 뚜렷한 악재·호재가 없더라도, 시장 전체가 크게 움직인 날이면 ' +
+    '"개별 이슈보다는 시장 전체 흐름을 따라간 것으로 보인다"고 설명해도 좋아. ' +
+    '그게 실제로 가장 흔한 이유이기도 하고, 초보자가 가장 궁금해하는 부분이야.\n' +
+    '⚠️ 다만 뉴스에 없는 사실을 **지어내지는 마**. 구체적인 악재를 아는 것처럼 쓰면 안 돼. ' +
+    '근거가 정말 없으면 솔직히 밝히고 evidence는 비우고 confidence는 low로 해. ' +
+    '종목명만 겹칠 뿐 주가와 무관한 기사(홍보·행사 등)는 근거로 쓰지 마.\n' +
+    '⚠️ 매수/매도 추천이나 목표가는 절대 쓰지 마. 지금 무슨 일이 있었는지만 설명해.';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post',
+      contentType: 'application/json',
+      muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 1500,
+        output_config: { format: { type: 'json_schema', schema: EXPLAIN_SCHEMA_ } },
+        system: '너는 초보 투자자에게 주식 시장을 쉽게 설명해주는 도우미야. ' +
+          '투자 권유는 하지 않고, 무슨 일이 있었는지 사실만 담백하게 전한다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) {
+    console.log('callClaudeExplain_: 연결 실패 - ' + err);
+    return null;
+  }
+
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  if (code >= 400) { console.log('callClaudeExplain_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+
+  const json = JSON.parse(body);
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') {
+    console.log('callClaudeExplain_: stop_reason=' + json.stop_reason);
+    return null;
+  }
+  const textBlock = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!textBlock) return null;
+  try {
+    return JSON.parse(textBlock.text);
+  } catch (err) {
+    console.log('callClaudeExplain_: JSON 파싱 실패 - ' + err);
+    return null;
+  }
 }
 
 // 카테고리별로 나뉜 뉴스를 한 데 모은다. 'all'은 다른 카테고리와 겹치므로 링크로 중복 제거.

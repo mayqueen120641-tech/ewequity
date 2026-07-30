@@ -307,6 +307,47 @@
   .news-item a:hover{color:var(--accent);}
   .news-item .meta{color:var(--sub);font-size:11px;margin-top:5px;}
 
+  /* ---------- 종목 등락 설명 모달 ---------- */
+  .modal-back{
+    display:none;position:fixed;inset:0;z-index:50;
+    background:rgba(74,59,46,.32);align-items:flex-start;justify-content:center;
+    padding:60px 16px;overflow-y:auto;
+  }
+  .modal-back.show{display:flex;}
+  .modal{
+    background:var(--panel);border:1px solid var(--panel-border);border-radius:16px;
+    width:100%;max-width:560px;padding:22px;box-shadow:0 10px 40px rgba(74,59,46,.18);
+  }
+  .modal-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:4px;}
+  .modal-head h3{margin:0;font-size:17px;flex:1;}
+  .modal-close{
+    background:transparent;border:none;color:var(--sub);font-size:18px;
+    cursor:pointer;padding:0 4px;line-height:1;font-family:inherit;
+  }
+  .modal-close:hover{color:var(--text);}
+  .modal-quote{font-size:13px;color:var(--sub);margin-bottom:14px;}
+  .modal-body{font-size:13.5px;line-height:1.85;}
+  .modal-conf{
+    display:inline-block;font-size:10px;padding:2px 7px;border-radius:5px;
+    border:1px solid currentColor;margin-left:6px;vertical-align:middle;
+  }
+  .modal-conf.high{color:var(--accent3);}
+  .modal-conf.medium{color:var(--accent);}
+  .modal-conf.low{color:var(--sub);}
+  .modal-ev{margin-top:16px;padding-top:14px;border-top:1px solid var(--panel-border);}
+  .modal-ev h4{margin:0 0 8px;font-size:12px;color:var(--sub);font-weight:500;}
+  .modal-ev a{display:block;color:var(--text);text-decoration:none;font-size:13px;line-height:1.5;}
+  .modal-ev a:hover{color:var(--accent);}
+  .modal-ev li{padding:7px 0;border-bottom:1px solid var(--panel-border);list-style:none;}
+  .modal-ev li:last-child{border-bottom:none;}
+  .modal-ev .note{color:var(--sub);font-size:11.5px;margin-top:3px;line-height:1.5;}
+  .modal-foot{margin-top:14px;font-size:11px;color:var(--sub);line-height:1.6;}
+  /* 클릭해서 설명을 볼 수 있는 요소임을 알려주는 표시 */
+  .why-hint{font-size:11px;color:var(--accent);margin-top:6px;}
+  .watch-card{cursor:pointer;}
+  table.rank tbody tr{cursor:pointer;}
+  table.rank tbody tr:hover{background:var(--hover);}
+
   /* ---------- 준비 중 화면 ---------- */
   .soon{text-align:center;padding:54px 20px;color:var(--sub);}
   .soon .soon-icon{font-size:38px;margin-bottom:14px;}
@@ -618,6 +659,21 @@
         </section>
       </section>
 
+    </div>
+  </div>
+</div>
+
+<!-- 종목 등락 원인 설명 -->
+<div class="modal-back" id="whyBack">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="whyTitle">
+    <div class="modal-head">
+      <h3 id="whyTitle">-</h3>
+      <button class="modal-close" id="whyClose" type="button" aria-label="닫기">✕</button>
+    </div>
+    <div class="modal-quote" id="whyQuote"></div>
+    <div class="modal-body" id="whyBody"></div>
+    <div class="modal-foot">
+      AI가 뉴스를 읽고 정리한 설명입니다. 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다.
     </div>
   </div>
 </div>
@@ -1274,6 +1330,77 @@ document.querySelectorAll('.range-btns button').forEach(function (btn) {
   });
 });
 
+// ---------- 종목 등락 원인 설명 ----------
+// 증권사 앱은 "-14.7%"까지만 보여주고 왜인지는 알려주지 않는다. 이 프로젝트의 차별점.
+// 브리핑과 달리 누를 때만 호출하므로(모든 종목을 미리 만들어둘 수 없다) 서버에서 종목별로
+// 30분 캐시를 건다.
+const CONF_LABEL = { high: '근거 뚜렷', medium: '정황 근거', low: '근거 부족' };
+
+function openWhy(symbol, name) {
+  document.getElementById('whyTitle').textContent = (name || symbol) + ' — 오늘 왜 움직였나';
+  document.getElementById('whyQuote').textContent = '';
+  document.getElementById('whyBody').innerHTML = '<div class="loading">뉴스를 읽는 중이에요… (10초쯤 걸려요)</div>';
+  document.getElementById('whyBack').classList.add('show');
+  loadWhy(symbol, name);
+}
+
+function closeWhy() { document.getElementById('whyBack').classList.remove('show'); }
+
+document.getElementById('whyClose').addEventListener('click', closeWhy);
+document.getElementById('whyBack').addEventListener('click', function (e) {
+  if (e.target === this) closeWhy(); // 바깥 여백 클릭 시 닫기
+});
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') closeWhy();
+});
+
+async function loadWhy(symbol, name) {
+  const bodyEl = document.getElementById('whyBody');
+  const quoteEl = document.getElementById('whyQuote');
+  try {
+    const d = isConfigured()
+      ? await apiGet('explain', { symbol: symbol, name: name || '' })
+      : mockWhy(name || symbol);
+
+    if (d.quote && !d.quote.error && d.quote.changePct != null) {
+      const cls = changeClass(d.quote.changePct);
+      quoteEl.innerHTML = fmtNum(d.quote.value, 2) +
+        ' <span class="change ' + cls + '">' + changeArrow(d.quote.changePct) + ' ' +
+        fmtNum(Math.abs(d.quote.changePct), 2) + '%</span>';
+    }
+
+    if (!d.explanation) {
+      bodyEl.innerHTML = '<div class="empty">' + esc_(d.error || '설명을 만들지 못했어요.') + '</div>';
+      return;
+    }
+
+    const conf = d.confidence || 'low';
+    let html = '<div>' + esc_(d.explanation) +
+      '<span class="modal-conf ' + conf + '">' + (CONF_LABEL[conf] || conf) + '</span></div>';
+
+    if ((d.evidence || []).length) {
+      html += '<div class="modal-ev"><h4>근거가 된 뉴스</h4><ul style="margin:0;padding:0;">' +
+        d.evidence.map(function (e) {
+          return '<li><a href="' + esc_(e.link) + '" target="_blank" rel="noopener">' + esc_(e.title) + '</a>' +
+            '<div class="note">' + esc_(e.note) + '</div></li>';
+        }).join('') + '</ul></div>';
+    }
+    bodyEl.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    bodyEl.innerHTML = '<div class="empty">설명을 불러오지 못했어요. 잠시 후 다시 시도해주세요.</div>';
+  }
+}
+
+function mockWhy(name) {
+  return {
+    quote: { value: 71500, changePct: -3.2 },
+    explanation: name + '은(는) 개별 종목의 특별한 악재보다는 시장 전체가 하락한 흐름을 따라간 것으로 보입니다. (목업 데이터)',
+    confidence: 'medium',
+    evidence: [{ title: '목업 뉴스 제목', link: '#', note: '화면 확인용 예시입니다.' }]
+  };
+}
+
 // ---------- 종목 순위 ----------
 // 백엔드가 네이버 금융에서 코스피 상위 100종목을 받아온다(시가총액 순).
 // 상승/하락 탭은 그 100종목을 등락률로 다시 정렬한 것 — 전체 시장이 아니라
@@ -1298,10 +1425,10 @@ function renderMarket() {
 
   body.innerHTML = list.slice(0, 30).map(function (x, i) {
     const cls = changeClass(x.changePct);
-    return '<tr>' +
+    // 행 전체를 누르면 등락 원인 설명이 뜬다. 코스피 종목이라 Yahoo 심볼은 .KS를 붙인다.
+    return '<tr data-symbol="' + esc_(x.code) + '.KS" data-name="' + esc_(x.name) + '">' +
       '<td class="c-rank">' + (i + 1) + '</td>' +
-      '<td class="c-name"><a href="https://finance.naver.com/item/main.naver?code=' + esc_(x.code) +
-        '" target="_blank" rel="noopener">' + esc_(x.name) + '</a></td>' +
+      '<td class="c-name">' + esc_(x.name) + '</td>' +
       '<td>' + (x.price == null ? '-' : fmtNum(x.price, 0)) + '</td>' +
       '<td class="change ' + cls + '">' + changeArrow(x.changePct) + ' ' + fmtNum(Math.abs(x.changePct), 2) + '%</td>' +
       '<td class="c-cap">' + fmtCap(x.marketCap) + '</td>' +
@@ -1329,6 +1456,11 @@ function mockMarket() {
     ]
   };
 }
+
+document.getElementById('rankBody').addEventListener('click', function (ev) {
+  const tr = ev.target.closest('tr[data-symbol]');
+  if (tr) openWhy(tr.getAttribute('data-symbol'), tr.getAttribute('data-name'));
+});
 
 document.querySelectorAll('#rankTabs button').forEach(function (btn) {
   btn.addEventListener('click', function () {
@@ -1395,23 +1527,27 @@ function renderWatchlist(quotesBySymbol) {
   empty.style.display = watchlist.length ? 'none' : '';
   grid.innerHTML = watchlist.map(function (w) {
     const entry = quotesBySymbol[w.symbol];
+    // 카드를 누르면 등락 원인 설명이 뜨므로 심볼/이름을 카드에 실어둔다.
+    const open = '<div class="card watch-card' + '%CLS%' + '" data-symbol="' + esc_(w.symbol) +
+      '" data-name="' + esc_(w.name || w.symbol) + '">';
     const del = '<button class="watch-del" data-symbol="' + esc_(w.symbol) + '" title="관심종목에서 빼기">×</button>';
     const label = '<div class="label">' + esc_(w.name || w.symbol) + '</div>';
     const sym = '<div class="sym">' + esc_(w.symbol) + '</div>';
 
     if (!entry) {
-      return '<div class="card watch-card">' + del + label + '<div class="value">불러오는 중…</div>' + sym + '</div>';
+      return open.replace('%CLS%', '') + del + label + '<div class="value">불러오는 중…</div>' + sym + '</div>';
     }
     if (entry.error || !entry.quote) {
-      return '<div class="card watch-card err">' + del + label + '<div class="value">시세를 못 받았어요</div>' + sym + '</div>';
+      return open.replace('%CLS%', ' err') + del + label + '<div class="value">시세를 못 받았어요</div>' + sym + '</div>';
     }
     const q = entry.quote;
     const cls = changeClass(q.changePct);
-    return '<div class="card watch-card ' + (cls === 'pos' ? 'up' : cls === 'neg' ? 'down' : '') + '">' +
+    return open.replace('%CLS%', cls === 'pos' ? ' up' : cls === 'neg' ? ' down' : '') +
       del + label +
       '<div class="value">' + fmtNum(q.value, 2) + '</div>' +
       '<div class="change ' + cls + '">' + changeArrow(q.changePct) + ' ' +
         fmtNum(Math.abs(q.changePct), 2) + '%</div>' + sym +
+      '<div class="why-hint">눌러서 원인 보기 ›</div>' +
       '</div>';
   }).join('');
 }
@@ -1454,8 +1590,11 @@ function mockQuotes(list) {
 }
 
 document.getElementById('watchGrid').addEventListener('click', function (ev) {
-  const btn = ev.target.closest('.watch-del[data-symbol]');
-  if (btn) removeFromWatchlist(btn.getAttribute('data-symbol'));
+  // 삭제(×)가 카드 안에 있으므로 삭제를 먼저 판정해야 한다. 안 그러면 지우려다 설명이 뜬다.
+  const del = ev.target.closest('.watch-del[data-symbol]');
+  if (del) { removeFromWatchlist(del.getAttribute('data-symbol')); return; }
+  const card = ev.target.closest('.watch-card[data-symbol]');
+  if (card) openWhy(card.getAttribute('data-symbol'), card.getAttribute('data-name'));
 });
 
 // ---------- 종목 검색 ----------
