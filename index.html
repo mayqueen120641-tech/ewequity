@@ -330,6 +330,54 @@
   .news-item a:hover{color:var(--accent);}
   .news-item .meta{color:var(--sub);font-size:11px;margin-top:5px;}
 
+  /* ---------- 대시보드에 물어보기 ---------- */
+  .ask-row{display:flex;gap:8px;margin-bottom:10px;}
+  .ask-row input{
+    flex:1;background:var(--bg);border:1px solid var(--panel-border);color:var(--text);
+    border-radius:10px;padding:10px 14px;font-size:13px;font-family:inherit;outline:none;
+  }
+  .ask-row input:focus{border-color:var(--accent);}
+  .ask-row input::placeholder{color:var(--sub);}
+  .ask-row button{
+    background:var(--accent);border:none;color:#fff;font-weight:600;
+    padding:0 18px;border-radius:10px;cursor:pointer;font-size:13px;font-family:inherit;white-space:nowrap;
+  }
+  .ask-row button:disabled{opacity:.5;cursor:default;}
+  .ask-samples{display:flex;flex-wrap:wrap;gap:6px;}
+  .ask-samples button{
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    font-size:11.5px;padding:5px 11px;border-radius:999px;cursor:pointer;font-family:inherit;
+  }
+  .ask-samples button:hover{background:var(--hover);color:var(--text);}
+  .ask-answer{
+    display:none;margin-top:14px;background:var(--bg);border:1px solid var(--panel-border);
+    border-left:3px solid var(--accent);border-radius:10px;padding:14px 16px;
+    font-size:13.5px;line-height:1.85;
+  }
+  .ask-answer.show{display:block;}
+  .ask-notice{
+    margin-top:10px;padding:9px 12px;border-radius:8px;font-size:11.5px;line-height:1.6;
+    background:#FDF6E3;border:1px solid #E8D9B0;color:#8A6D3B;
+  }
+  .ask-src{margin-top:12px;padding-top:10px;border-top:1px solid var(--panel-border);}
+  .ask-src h4{margin:0 0 6px;font-size:11px;color:var(--sub);font-weight:500;}
+  .ask-src a{display:block;color:var(--text);text-decoration:none;font-size:12.5px;padding:3px 0;}
+  .ask-src a:hover{color:var(--accent);}
+
+  /* ---------- 주간 리포트 ---------- */
+  .wk-section{margin-bottom:20px;}
+  .wk-section h3{font-size:14px;margin:0 0 10px;font-weight:700;}
+  .wk-days{display:grid;gap:2px;}
+  .wk-day{display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--panel-border);font-size:13px;}
+  .wk-day:last-child{border-bottom:none;}
+  .wk-date{flex:0 0 76px;color:var(--sub);font-size:12px;}
+  .wk-text{flex:1;min-width:0;line-height:1.65;}
+  .wk-terms .row{display:flex;gap:8px;padding:6px 0;font-size:13px;align-items:baseline;
+    border-bottom:1px solid var(--panel-border);}
+  .wk-terms .row:last-child{border-bottom:none;}
+  .wk-terms .t{flex:0 0 auto;font-weight:600;color:var(--accent);}
+  .wk-terms .d{flex:1;min-width:0;color:var(--sub);line-height:1.55;}
+
   /* ---------- 종목 등락 설명 모달 ---------- */
   .modal-back{
     display:none;position:fixed;inset:0;z-index:50;
@@ -479,6 +527,25 @@
           <div class="briefing-tags" id="briefingTags"></div>
           <div class="briefing-sectors" id="briefingSectors"></div>
           <div class="briefing-terms" id="briefingTerms" style="display:none;"></div>
+        </section>
+
+        <!-- 오늘 화면에 떠 있는 데이터를 근거로 답한다. 일반 챗봇과 다른 점. -->
+        <section class="panel">
+          <div class="briefing-head" style="margin-bottom:12px;">
+            <h2>물어보기</h2>
+            <span class="briefing-badge">AI</span>
+          </div>
+          <div class="ask-row">
+            <input id="askInput" type="text" maxlength="200" placeholder="오늘 시장에 대해 물어보세요 (예: 코스피 왜 떨어졌어?)">
+            <button id="askBtn" type="button">물어보기</button>
+          </div>
+          <div class="ask-samples" id="askSamples">
+            <button type="button">코스피 왜 떨어졌어?</button>
+            <button type="button">오늘 뭐가 제일 중요한 뉴스야?</button>
+            <button type="button">환율이 내리면 뭐가 좋아져?</button>
+            <button type="button">내 관심종목 오늘 어땠어?</button>
+          </div>
+          <div class="ask-answer" id="askAnswer"></div>
         </section>
 
         <section class="cards" id="cards">
@@ -653,18 +720,16 @@
       <!-- ========== 리포트 (준비 중) ========== -->
       <section class="page" id="page-report">
         <div class="page-head">
-          <h1>리포트</h1>
-          <p>기간별 시장 요약과 기록을 모아 보는 화면입니다.</p>
+          <h1>주간 리포트</h1>
+          <p>매일 쌓인 브리핑을 모아 이번 주 흐름과 새로 나온 개념을 정리합니다.</p>
         </div>
         <section class="panel">
-          <div class="soon">
-            <div class="soon-icon">▣</div>
-            <h3>준비 중입니다</h3>
-            <p>
-              매일 만들어지는 AI 브리핑을 쌓아두고 주간·월간으로 돌아보는 화면을 계획하고 있습니다.
-              지금은 브리핑이 최신 1건만 저장되고 있어서, 기록을 남기는 작업이 먼저 필요합니다.
-            </p>
+          <div class="briefing-head" style="margin-bottom:14px;">
+            <h2 id="weeklyRange">이번 주 돌아보기</h2>
+            <span class="briefing-badge">AI</span>
+            <button id="weeklyRefresh" class="refresh-btn" type="button" style="margin-left:auto;">다시 만들기</button>
           </div>
+          <div id="weeklyBody"><div class="loading">불러오는 중…</div></div>
         </section>
       </section>
 
@@ -1412,6 +1477,123 @@ document.querySelectorAll('.range-btns button').forEach(function (btn) {
   });
 });
 
+// ---------- 주간 리포트 ----------
+// 매일 브리핑이 갱신될 때마다 서버가 그날 기록을 쌓아둔다. 2일치 이상 모여야 만들어진다.
+let weeklyLoaded = false;
+
+async function loadWeekly(force) {
+  const el = document.getElementById('weeklyBody');
+  const rangeEl = document.getElementById('weeklyRange');
+  el.innerHTML = '<div class="loading">이번 주 기록을 정리하는 중이에요…</div>';
+  try {
+    const d = isConfigured() ? await apiGet('weekly', force ? { nocache: 1 } : {}) : mockWeekly();
+
+    if (d.error) {
+      el.innerHTML = '<div class="soon"><div class="soon-icon">▣</div>' +
+        '<h3>아직 기록이 모이지 않았어요</h3><p>' + esc_(d.error) +
+        '<br>브리핑이 3시간마다 갱신되면서 하루에 한 번 기록이 쌓입니다. ' +
+        '며칠 지나면 이 화면에서 한 주를 돌아볼 수 있어요.</p></div>';
+      rangeEl.textContent = '이번 주 돌아보기';
+      return;
+    }
+
+    rangeEl.textContent = d.from + ' ~ ' + d.to + ' (' + d.days + '일치)';
+
+    let html = '<div class="wk-section"><h3>이번 주 흐름</h3>' +
+      '<div class="briefing-text" style="margin:0;">' + esc_(d.overview) + '</div></div>';
+
+    if ((d.keyEvents || []).length) {
+      html += '<div class="wk-section"><h3>주요 이슈</h3><div class="wk-days">' +
+        d.keyEvents.map(function (e) {
+          return '<div class="wk-day"><span class="wk-date">' + esc_(e.date) + '</span>' +
+            '<span class="wk-text">' + esc_(e.event) + '</span></div>';
+        }).join('') + '</div></div>';
+    }
+
+    if ((d.lessons || []).length) {
+      html += '<div class="wk-section"><h3>이번 주 나온 개념</h3><div class="wk-terms">' +
+        d.lessons.map(function (t) {
+          return '<div class="row"><span class="t">' + esc_(t.term) + '</span>' +
+            '<span class="d">' + esc_(t.plain) + '</span></div>';
+        }).join('') + '</div></div>';
+    }
+
+    if ((d.daily || []).length) {
+      html += '<div class="wk-section"><h3>날짜별 기록</h3><div class="wk-days">' +
+        d.daily.map(function (b) {
+          return '<div class="wk-day"><span class="wk-date">' + esc_(b.date) + '</span>' +
+            '<span class="wk-text">' + esc_(b.summary) + '</span></div>';
+        }).join('') + '</div></div>';
+    }
+    el.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    el.innerHTML = '<div class="empty">리포트를 불러오지 못했어요.</div>';
+  }
+}
+
+function mockWeekly() {
+  return {
+    from: '2026-07-23', to: '2026-07-29', days: 5,
+    overview: '주 초반 관망세로 시작해 후반으로 갈수록 반도체 업종을 중심으로 낙폭이 커졌습니다. (목업 데이터)',
+    keyEvents: [{ date: '2026-07-29', event: '코스피가 반도체 주도로 급락' }],
+    lessons: [{ term: '리스크 오프', plain: '위험 자산을 팔고 안전 자산으로 옮기는 흐름이에요.' }],
+    daily: [{ date: '2026-07-29', summary: '코스피 급락, 반도체 집중 매도. (목업)' }]
+  };
+}
+
+document.getElementById('weeklyRefresh').addEventListener('click', function () { loadWeekly(true); });
+
+// ---------- 대시보드에 물어보기 ----------
+// 관심종목은 브라우저에만 있으므로 질문할 때 심볼을 같이 보낸다.
+// 지표·브리핑·뉴스는 서버가 이미 갖고 있어서 보낼 필요가 없다.
+async function askQuestion(q) {
+  const input = document.getElementById('askInput');
+  const btn = document.getElementById('askBtn');
+  const el = document.getElementById('askAnswer');
+  const question = (q != null ? q : input.value).trim();
+  if (!question) return;
+
+  input.value = question;
+  btn.disabled = true;
+  el.className = 'ask-answer show';
+  el.innerHTML = '<div class="loading">오늘 데이터를 보고 답을 만드는 중이에요…</div>';
+
+  try {
+    const d = isConfigured()
+      ? await apiGet('ask', { q: question, symbols: watchlist.map(function (w) { return w.symbol; }).join(',') })
+      : { answer: '목업 모드입니다. GAS_URL을 연결하면 실제 데이터로 답합니다.', sources: [] };
+
+    if (d.error) { el.innerHTML = '<div class="empty">' + esc_(d.error) + '</div>'; return; }
+
+    let html = '<div>' + esc_(d.answer) + '</div>';
+    if (d.isAdvice) {
+      html += '<div class="ask-notice">투자 판단에 대한 질문이라 특정 종목을 사거나 팔라는 답은 드리지 않아요. ' +
+        '지금 상황을 이해하는 데 도움이 되는 정보만 정리했고, 결정은 본인 몫입니다.</div>';
+    }
+    if ((d.sources || []).length) {
+      html += '<div class="ask-src"><h4>참고한 뉴스</h4>' + d.sources.map(function (s) {
+        return '<a href="' + esc_(s.link) + '" target="_blank" rel="noopener">· ' + esc_(s.title) + '</a>';
+      }).join('') + '</div>';
+    }
+    el.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    el.innerHTML = '<div class="empty">답변을 불러오지 못했어요. 잠시 후 다시 시도해주세요.</div>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('askBtn').addEventListener('click', function () { askQuestion(); });
+document.getElementById('askInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') askQuestion();
+});
+document.getElementById('askSamples').addEventListener('click', function (e) {
+  const btn = e.target.closest('button');
+  if (btn) askQuestion(btn.textContent.trim());
+});
+
 // ---------- 종목 등락 원인 설명 ----------
 // 증권사 앱은 "-14.7%"까지만 보여주고 왜인지는 알려주지 않는다. 이 프로젝트의 차별점.
 // 브리핑과 달리 누를 때만 호출하므로(모든 종목을 미리 만들어둘 수 없다) 서버에서 종목별로
@@ -1775,6 +1957,8 @@ function showPage(name) {
   // 차트는 숨겨진 동안 캔버스 크기가 0이라 제대로 안 그려진다. 대시보드로 돌아오면 다시 그린다.
   if (name === 'dashboard' && lastHistoryData) renderChart(lastHistoryData);
   if (name === 'settings') renderSettings();
+  // 리포트는 AI 호출이 붙으므로 그 페이지를 열 때만, 그것도 한 번만 불러온다.
+  if (name === 'report' && !weeklyLoaded) { weeklyLoaded = true; loadWeekly(); }
   window.scrollTo(0, 0);
 }
 

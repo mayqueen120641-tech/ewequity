@@ -27,6 +27,15 @@ function doGet(e) {
       case 'market':
         result = getMarket(noCache);
         break;
+      case 'weekly':
+        result = getWeekly(noCache);
+        break;
+      case 'ask':
+        result = getAsk(
+          (e.parameter && e.parameter.q) || '',
+          (e.parameter && e.parameter.symbols) || ''
+        );
+        break;
       case 'explain':
         result = getExplain(
           (e.parameter && e.parameter.symbol) || '',
@@ -1182,6 +1191,9 @@ function refreshAiBriefing() {
     .map(function (t) { return { term: String(t.term).slice(0, 14), plain: String(t.plain).slice(0, 60) }; })
     .slice(0, 4);
 
+  // 주간 리포트를 만들려면 매일 기록이 쌓여 있어야 한다.
+  saveDailyBrief_(props, result.summary, hashtags, terms);
+
   props.setProperty(AI_BRIEFING_PROP_, JSON.stringify({
     summary: result.summary,
     summaryEasy: result.summaryEasy,
@@ -1410,6 +1422,307 @@ function callClaudeExplain_(apiKey, name, quote, news, market) {
     console.log('callClaudeExplain_: JSON 파싱 실패 - ' + err);
     return null;
   }
+}
+
+// ================= 8. 주간 리포트 =================
+// 브리핑은 최신 1건만 저장하므로, 주간으로 돌아보려면 매일 따로 쌓아둬야 한다.
+// 하루치를 각각 별도 속성(BRIEF_DAY_2026-07-29)에 저장한다 — 한 값에 몰아넣으면
+// 스크립트 속성의 값당 9KB 제한에 금방 걸린다.
+var BRIEF_DAY_PREFIX_ = 'BRIEF_DAY_';
+var BRIEF_KEEP_DAYS_ = 21;
+
+// 브리핑을 갱신할 때마다 그날 기록을 남긴다(같은 날 여러 번 돌면 마지막 것으로 덮어씀).
+function saveDailyBrief_(props, summary, hashtags, terms) {
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  props.setProperty(BRIEF_DAY_PREFIX_ + today, JSON.stringify({
+    date: today,
+    summary: String(summary || '').slice(0, 400),
+    hashtags: (hashtags || []).slice(0, 6),
+    terms: (terms || []).slice(0, 3)
+  }));
+
+  // 오래된 기록은 지운다. 속성 전체 용량(500KB)과 목록 조회 비용을 아끼기 위함.
+  const cutoff = Utilities.formatDate(
+    new Date(Date.now() - BRIEF_KEEP_DAYS_ * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyy-MM-dd');
+  Object.keys(props.getProperties()).forEach(function (k) {
+    if (k.indexOf(BRIEF_DAY_PREFIX_) === 0 && k.slice(BRIEF_DAY_PREFIX_.length) < cutoff) {
+      props.deleteProperty(k);
+    }
+  });
+}
+
+function loadDailyBriefs_(days) {
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const from = Utilities.formatDate(
+    new Date(Date.now() - days * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyy-MM-dd');
+  const out = [];
+  Object.keys(props).forEach(function (k) {
+    if (k.indexOf(BRIEF_DAY_PREFIX_) !== 0) return;
+    if (k.slice(BRIEF_DAY_PREFIX_.length) < from) return;
+    try { out.push(JSON.parse(props[k])); } catch (err) { /* 깨진 기록은 건너뜀 */ }
+  });
+  return out.sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+}
+
+var WEEKLY_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    overview: {
+      type: 'string',
+      description: '이번 주 시장 흐름 요약. 한국어 4~5문장. 날마다 나열하지 말고 ' +
+        '"무엇이 이어졌고 무엇이 바뀌었는지" 흐름으로 써줄 것.'
+    },
+    keyEvents: {
+      type: 'array',
+      description: '이번 주 가장 중요했던 일 3~4개.',
+      items: {
+        type: 'object',
+        properties: {
+          date: { type: 'string', description: '해당 날짜 (YYYY-MM-DD)' },
+          event: { type: 'string', description: '무슨 일이었는지 한 문장' }
+        },
+        required: ['date', 'event'],
+        additionalProperties: false
+      }
+    },
+    lessons: {
+      type: 'array',
+      description: '이번 주 기록에 나온 경제 개념 3~4개를 초보자용으로 정리. 학습용.',
+      items: {
+        type: 'object',
+        properties: {
+          term: { type: 'string', description: '개념 이름 (14자 이내)' },
+          plain: { type: 'string', description: '한 문장 설명 (50자 내외)' }
+        },
+        required: ['term', 'plain'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['overview', 'keyEvents', 'lessons'],
+  additionalProperties: false
+};
+
+function getWeekly(noCache) {
+  const briefs = loadDailyBriefs_(7);
+  if (briefs.length < 2) {
+    return { days: briefs.length, error: '주간 리포트는 브리핑이 2일치 이상 쌓여야 만들 수 있어요. ' +
+      '지금은 ' + briefs.length + '일치가 쌓였습니다.' };
+  }
+
+  const cacheKey = 'weekly_' + md5_(briefs.map(function (b) { return b.date; }).join(','));
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+  if (!key) return { days: briefs.length, error: 'AI 리포트는 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
+
+  const result = callClaudeWeekly_(key, briefs);
+  if (!result) return { days: briefs.length, error: '리포트를 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  const data = {
+    from: briefs[0].date, to: briefs[briefs.length - 1].date, days: briefs.length,
+    overview: result.overview,
+    keyEvents: (result.keyEvents || []).slice(0, 4),
+    lessons: (result.lessons || []).slice(0, 4),
+    daily: briefs.map(function (b) { return { date: b.date, summary: b.summary }; }),
+    at: new Date().toISOString()
+  };
+  cachePut_(cacheKey, data, 21600); // 6시간 (하루 기록이 늘면 캐시 키가 바뀌어 자연히 갱신됨)
+  return data;
+}
+
+function callClaudeWeekly_(apiKey, briefs) {
+  const lines = briefs.map(function (b) {
+    return '[' + b.date + '] ' + b.summary +
+      (b.hashtags && b.hashtags.length ? ' (키워드: ' + b.hashtags.join(', ') + ')' : '');
+  }).join('\n\n');
+
+  const prompt =
+    '아래는 최근 ' + briefs.length + '일간의 일일 경제 브리핑 기록이야.\n\n' + lines + '\n\n' +
+    'overview에는 이번 주 시장 흐름을 4~5문장으로 정리해줘. 날짜별로 나열하지 말고 ' +
+    '무엇이 이어졌고 무엇이 바뀌었는지 흐름으로 써줘.\n' +
+    'keyEvents에는 가장 중요했던 일 3~4개를 날짜와 함께 골라줘.\n' +
+    'lessons에는 이번 주 기록에 나온 경제 개념 3~4개를 초보자가 이해할 수 있게 정리해줘. ' +
+    '이번 주 상황과 연결해서 설명하면 더 좋아.\n' +
+    '⚠️ 기록에 없는 내용은 지어내지 마. 매수/매도 추천이나 다음 주 전망 예측도 하지 마.';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post',
+      contentType: 'application/json',
+      muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 2000,
+        output_config: { format: { type: 'json_schema', schema: WEEKLY_SCHEMA_ } },
+        system: '너는 초보 투자자가 한 주를 돌아보도록 돕는 도우미야. 기록에 있는 사실만 쓴다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) {
+    console.log('callClaudeWeekly_: 연결 실패 - ' + err);
+    return null;
+  }
+
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  if (code >= 400) { console.log('callClaudeWeekly_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+
+  const json = JSON.parse(body);
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
+  const textBlock = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!textBlock) return null;
+  try { return JSON.parse(textBlock.text); }
+  catch (err) { console.log('callClaudeWeekly_: JSON 파싱 실패 - ' + err); return null; }
+}
+
+// ================= 7. 대시보드에 물어보기 =================
+// 일반 챗봇과 다른 점은 "오늘 이 화면에 떠 있는 데이터"를 이미 알고 답한다는 것이다.
+// 지표·브리핑·뉴스는 서버가 갖고 있고, 관심종목만 브라우저에서 받아온다.
+//
+// ⚠️ 웹앱이 ANYONE_ANONYMOUS라 이 엔드포인트는 누구나 호출할 수 있다. AI 호출은 과금되므로
+// 하루 상한을 걸어 URL이 새어나가도 크레딧이 무한정 빠지지 않게 한다.
+var ASK_DAILY_CAP_ = 120;
+var ASK_COUNT_PROP_ = 'ASK_COUNT_V1';
+var ASK_MAX_LEN_ = 200;
+
+var ASK_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    answer: {
+      type: 'string',
+      description: '질문에 대한 답. 한국어 3~5문장. 주어진 데이터에 근거해서만 답하고, ' +
+        '데이터에 없는 내용은 모른다고 밝힐 것. 초보자도 이해할 수 있게 쉬운 말로.'
+    },
+    relatedNews: {
+      type: 'array',
+      description: '답의 근거로 쓴 뉴스 번호. 없으면 빈 배열.',
+      items: { type: 'integer' }
+    },
+    isAdvice: {
+      type: 'boolean',
+      description: '질문이 매수/매도 여부나 투자 판단을 물어본 것이면 true. ' +
+        '(그런 질문이어도 추천하지 말고 판단에 필요한 상황만 설명할 것)'
+    }
+  },
+  required: ['answer', 'relatedNews', 'isAdvice'],
+  additionalProperties: false
+};
+
+function getAsk(question, symbolsCsv) {
+  const q = String(question || '').trim();
+  if (!q) return { error: '질문을 입력해주세요.' };
+  if (q.length > ASK_MAX_LEN_) return { error: '질문이 너무 길어요. ' + ASK_MAX_LEN_ + '자 이내로 줄여주세요.' };
+
+  const props = PropertiesService.getScriptProperties();
+  const key = props.getProperty('ANTHROPIC_API_KEY');
+  if (!key) return { error: 'AI 답변 기능은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
+
+  // 같은 질문을 반복하면 캐시로 돌려줘서 과금과 대기 시간을 줄인다.
+  const cacheKey = 'ask_' + md5_(q.toLowerCase() + '|' + String(symbolsCsv || ''));
+  const cached = cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  if (!bumpAskCount_(props)) {
+    return { error: '오늘 질문 가능 횟수를 모두 사용했어요. 내일 다시 시도해주세요.' };
+  }
+
+  const news = collectAllNews_();
+  const result = callClaudeAsk_(key, q, safe_(getRates), getBriefing(), news, symbolsCsv);
+  if (!result) return { error: '답변을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  // 링크는 백엔드가 붙인다(모델이 URL을 지어내지 못하게).
+  const sources = (result.relatedNews || [])
+    .map(function (i) { return news[i]; })
+    .filter(Boolean)
+    .map(function (n) { return { title: n.title, link: n.link }; })
+    .slice(0, 3);
+
+  const data = {
+    question: q,
+    answer: result.answer,
+    isAdvice: !!result.isAdvice,
+    sources: sources,
+    at: new Date().toISOString()
+  };
+  cachePut_(cacheKey, data, 1800); // 30분
+  return data;
+}
+
+// 날짜가 바뀌면 카운터를 리셋한다. 한도를 넘으면 false.
+function bumpAskCount_(props) {
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  let rec = { date: today, n: 0 };
+  try {
+    const raw = props.getProperty(ASK_COUNT_PROP_);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.date === today) rec = parsed;
+    }
+  } catch (err) { /* 깨졌으면 새로 시작 */ }
+
+  if (rec.n >= ASK_DAILY_CAP_) return false;
+  rec.n += 1;
+  props.setProperty(ASK_COUNT_PROP_, JSON.stringify(rec));
+  return true;
+}
+
+function callClaudeAsk_(apiKey, question, rates, brief, news, symbolsCsv) {
+  const headlines = news.map(function (n, i) { return i + '. ' + n.title; }).join('\n');
+  const watch = String(symbolsCsv || '').split(',').map(function (s) { return s.trim(); })
+    .filter(Boolean).slice(0, 20).join(', ');
+
+  const prompt =
+    '[오늘 지표]\n' + JSON.stringify(rates) + '\n\n' +
+    (brief && brief.summary ? '[오늘 브리핑]\n' + brief.summary + '\n\n' : '') +
+    '[오늘 뉴스 헤드라인]\n' + headlines + '\n\n' +
+    (watch ? '[사용자가 담아둔 관심종목]\n' + watch + '\n\n' : '') +
+    '[질문]\n' + question + '\n\n' +
+    '위 데이터에 근거해서만 답해줘. 데이터에 없는 걸 아는 척하지 말고, 모르면 모른다고 해.\n' +
+    '초보 투자자가 물어본다고 생각하고 쉬운 말로 3~5문장으로 답해줘. ' +
+    '어려운 용어를 쓰면 괄호로 짧게 풀어줘.\n' +
+    '⚠️ "사도 돼?", "팔까?" 같은 질문이어도 **매수/매도를 추천하지 마.** ' +
+    '대신 지금 상황이 어떤지, 판단할 때 무엇을 봐야 하는지를 설명하고 ' +
+    '결정은 본인 몫이라는 점을 자연스럽게 전해. 그런 질문이면 isAdvice를 true로 해.\n' +
+    '목표가나 수익률 예측도 하지 마.';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post',
+      contentType: 'application/json',
+      muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 1200,
+        output_config: { format: { type: 'json_schema', schema: ASK_SCHEMA_ } },
+        system: '너는 초보 투자자에게 오늘의 시장을 설명해주는 도우미야. ' +
+          '주어진 데이터 안에서만 답하고, 투자 권유는 하지 않는다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) {
+    console.log('callClaudeAsk_: 연결 실패 - ' + err);
+    return null;
+  }
+
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  if (code >= 400) { console.log('callClaudeAsk_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+
+  const json = JSON.parse(body);
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') {
+    console.log('callClaudeAsk_: stop_reason=' + json.stop_reason);
+    return null;
+  }
+  const textBlock = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!textBlock) return null;
+  try { return JSON.parse(textBlock.text); }
+  catch (err) { console.log('callClaudeAsk_: JSON 파싱 실패 - ' + err); return null; }
 }
 
 // 카테고리별로 나뉜 뉴스를 한 데 모은다. 'all'은 다른 카테고리와 겹치므로 링크로 중복 제거.
