@@ -1031,7 +1031,27 @@ var BRIEFING_SCHEMA_ = {
   properties: {
     summary: {
       type: 'string',
-      description: '오늘의 경제 브리핑. 한국어 3~4문장. 지표 흐름과 주요 뉴스를 엮어서 작성.'
+      description: '오늘의 경제 브리핑. 한국어 3~4문장. 지표 흐름과 주요 뉴스를 엮어서 작성. ' +
+        '시장을 아는 사람이 빠르게 읽는 용도라 군더더기 없이 간결하게.'
+    },
+    summaryEasy: {
+      type: 'string',
+      description: '같은 내용을 **주식을 막 시작한 사람**에게 설명하듯 다시 쓴 것. 3~4문장. ' +
+        '어려운 용어는 괄호로 짧게 풀고, 그래서 이게 무슨 의미인지까지 알려줄 것. ' +
+        '예: "환율이 내렸어요(원화 가치가 올랐다는 뜻이에요). 해외 주식을 사기엔 조금 유리해진 셈이에요."'
+    },
+    terms: {
+      type: 'array',
+      description: '오늘 브리핑·뉴스에 나온 어려운 경제 용어 3~4개 풀이. 초보자 모드에서 보여준다.',
+      items: {
+        type: 'object',
+        properties: {
+          term: { type: 'string', description: '용어 (12자 이내)' },
+          plain: { type: 'string', description: '초보자도 이해할 한 문장 설명 (40자 내외)' }
+        },
+        required: ['term', 'plain'],
+        additionalProperties: false
+      }
     },
     hashtags: {
       type: 'array',
@@ -1087,14 +1107,14 @@ var BRIEFING_SCHEMA_ = {
       }
     }
   },
-  required: ['summary', 'hashtags', 'sectors', 'rankings'],
+  required: ['summary', 'summaryEasy', 'terms', 'hashtags', 'sectors', 'rankings'],
   additionalProperties: false
 };
 
 /** doGet에서 읽는 함수. 저장된 브리핑을 그대로 돌려준다(외부 호출 없음 = 즉시 응답). */
 function getBriefing() {
   const raw = PropertiesService.getScriptProperties().getProperty(AI_BRIEFING_PROP_);
-  const empty = { summary: null, hashtags: [], sectors: [], importance: {} };
+  const empty = { summary: null, summaryEasy: null, terms: [], hashtags: [], sectors: [], importance: {} };
   if (!raw) return empty;
   try {
     const parsed = JSON.parse(raw);
@@ -1102,6 +1122,8 @@ function getBriefing() {
     parsed.importance = parsed.importance || {};
     parsed.hashtags = parsed.hashtags || [];
     parsed.sectors = parsed.sectors || [];
+    parsed.terms = parsed.terms || [];
+    parsed.summaryEasy = parsed.summaryEasy || null;
     parsed.stale = !!(parsed.at && (Date.now() - new Date(parsed.at).getTime()) > AI_BRIEFING_MAX_AGE_MS_);
     return parsed;
   } catch (err) {
@@ -1154,15 +1176,24 @@ function refreshAiBriefing() {
     .map(function (k) { return bySector[k]; })
     .filter(Boolean);
 
+  // 스크립트 속성 9KB 제한이 있어 용어 풀이도 개수와 길이를 잘라둔다.
+  const terms = (result.terms || [])
+    .filter(function (t) { return t && t.term && t.plain; })
+    .map(function (t) { return { term: String(t.term).slice(0, 14), plain: String(t.plain).slice(0, 60) }; })
+    .slice(0, 4);
+
   props.setProperty(AI_BRIEFING_PROP_, JSON.stringify({
     summary: result.summary,
+    summaryEasy: result.summaryEasy,
+    terms: terms,
     hashtags: hashtags,
     sectors: sectors,
     importance: importance,
     at: new Date().toISOString()
   }));
   console.log('refreshAiBriefing: 갱신 완료 (뉴스 ' + news.length + '건, 섹터 ' +
-    sectors.length + '/' + SECTOR_KEYS_.length + ', 태그 ' + hashtags.length + ')');
+    sectors.length + '/' + SECTOR_KEYS_.length + ', 태그 ' + hashtags.length +
+    ', 용어 ' + terms.length + ', 쉬운요약 ' + (result.summaryEasy ? 'O' : 'X') + ')');
 }
 
 // ================= 6. 종목별 "왜 움직였나" =================
@@ -1406,6 +1437,9 @@ function callClaudeBriefing_(apiKey, rates, news) {
     '[지표]\n' + JSON.stringify(rates) + '\n\n' +
     '[뉴스 헤드라인]\n' + headlines + '\n\n' +
     'summary에는 지표 흐름과 주요 뉴스를 엮어 한국어 3~4문장 브리핑을 써줘.\n' +
+    'summaryEasy에는 같은 내용을 주식을 막 시작한 사람에게 설명하듯 다시 써줘. ' +
+    '어려운 용어는 괄호로 풀고, 그게 왜 중요한지까지 알려줘. 겁주지 말고 담담하게.\n' +
+    'terms에는 오늘 내용에 나온 어려운 경제 용어 3~4개를 골라 한 문장씩 풀어줘.\n' +
     'hashtags에는 오늘 시장을 관통하는 키워드 5~8개를 뽑아줘. "경제"·"증시"처럼 아무 날에나 ' +
     '쓸 수 있는 말 말고, "반도체급락"·"FOMC대기"처럼 오늘을 특정하는 말로.\n' +
     'sectors에는 ' + SECTOR_KEYS_.join(', ') + ' 7개 전부에 대해 한 줄씩 써줘. ' +

@@ -145,6 +145,29 @@
   .briefing.is-stale .briefing-stale{display:inline;}
   .briefing-text{margin:10px 0 0;font-size:13.5px;line-height:1.8;color:var(--text);}
 
+  /* 쉽게 / 간결하게 토글 */
+  .briefing-mode{display:flex;gap:5px;margin-left:auto;}
+  .briefing-mode button{
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    font-size:11px;padding:4px 10px;border-radius:8px;cursor:pointer;font-family:inherit;
+  }
+  .briefing-mode button:hover{background:var(--hover);color:var(--text);}
+  .briefing-mode button.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
+
+  /* 초보자 모드에서만 보이는 용어 풀이 */
+  .briefing-terms{margin-top:14px;padding-top:12px;border-top:1px solid var(--panel-border);}
+  .briefing-terms h4{margin:0 0 8px;font-size:11px;color:var(--sub);font-weight:500;}
+  .briefing-terms dl{margin:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:2px 18px;}
+  .briefing-terms .row{display:flex;gap:8px;padding:5px 0;font-size:12.5px;align-items:baseline;}
+  .briefing-terms .t{flex:0 0 auto;font-weight:600;color:var(--accent);}
+  .briefing-terms .d{flex:1;min-width:0;color:var(--sub);line-height:1.55;}
+
+  /* 뉴스가 내 관심종목과 관련될 때 붙는 배지 */
+  .news-mine{
+    font-size:10px;padding:1px 6px;border-radius:4px;margin-right:6px;white-space:nowrap;
+    color:var(--accent3);border:1px solid currentColor;
+  }
+
   .briefing-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
   .briefing-tags span{
     font-size:11px;color:var(--accent);background:var(--hover);
@@ -447,10 +470,15 @@
             <h2>오늘의 브리핑</h2>
             <span class="briefing-badge">AI</span>
             <span class="briefing-stale" id="briefingStale">오래된 브리핑</span>
+            <div class="briefing-mode" id="briefingMode">
+              <button data-mode="easy" type="button">쉽게</button>
+              <button data-mode="plain" type="button" class="active">간결하게</button>
+            </div>
           </div>
           <p class="briefing-text" id="briefingText"></p>
           <div class="briefing-tags" id="briefingTags"></div>
           <div class="briefing-sectors" id="briefingSectors"></div>
+          <div class="briefing-terms" id="briefingTerms" style="display:none;"></div>
         </section>
 
         <section class="cards" id="cards">
@@ -679,7 +707,10 @@
 </div>
 
 <script>
-const state = { range: '3M', category: 'all', newsSort: 'importance', rankView: 'cap', chart: null, usingMock: false };
+const state = { range: '3M', category: 'all', newsSort: 'importance', rankView: 'cap',
+  // 초보자 모드는 취향이라 브라우저에 기억해둔다.
+  briefMode: localStorage.getItem('ewequity.briefMode') || 'plain',
+  chart: null, usingMock: false };
 
 function isConfigured() {
   return typeof GAS_URL === 'string' && GAS_URL.indexOf('http') === 0;
@@ -754,6 +785,12 @@ function mockBriefing() {
   const n = mockNews().items;
   return {
     summary: '기준금리는 한국 2.5%, 미국 3.63%로 동결 흐름이 이어지고 있습니다. 원/달러 환율은 1,465원 부근에서 소폭 하락했고, 코스피는 장중 급락 후 상승 전환하며 변동성이 컸습니다. 국제유가는 배럴당 84달러대로 올라 물가 압력이 다시 부각되는 모습입니다.',
+    summaryEasy: '오늘은 주식 시장이 크게 내린 날이에요. 특히 반도체 회사들 주가가 많이 떨어졌어요(외국에서 경쟁이 심해질 거란 걱정 때문이에요). 환율은 조금 내렸는데, 이건 원화 가치가 올랐다는 뜻이라 해외 물건을 사기엔 조금 유리해진 셈이에요.',
+    terms: [
+      { term: '기준금리', plain: '중앙은행이 정하는 기준이 되는 이자율이에요.' },
+      { term: 'PCE', plain: '미국 사람들이 물건에 얼마나 돈을 썼는지 보는 물가 지표예요.' },
+      { term: '리스크 오프', plain: '위험해 보이는 자산을 팔고 안전한 곳으로 옮기는 흐름이에요.' }
+    ],
     hashtags: ['반도체급락', 'FOMC대기', '환율안정', '유가상승', '소비심리악화'],
     sectors: [
       { key: 'kospi', tone: 'down', line: '반도체 주도로 9.97% 급락, 변동성 확대' },
@@ -1181,7 +1218,24 @@ const SECTOR_LABELS = {
 function renderBriefing(b) {
   const panel = document.getElementById('briefingPanel');
   if (!b || !b.summary) { panel.style.display = 'none'; return; }
-  document.getElementById('briefingText').textContent = b.summary;
+
+  // 초보자 모드: 같은 내용을 쉬운 말로 쓴 요약 + 용어 풀이를 보여준다.
+  // 쉬운 요약이 아직 없는 예전 데이터면 기존 요약으로 조용히 되돌린다.
+  const easy = state.briefMode === 'easy';
+  document.getElementById('briefingText').textContent =
+    (easy && b.summaryEasy) ? b.summaryEasy : b.summary;
+
+  const termsEl = document.getElementById('briefingTerms');
+  const terms = b.terms || [];
+  if (easy && terms.length) {
+    termsEl.innerHTML = '<h4>오늘 나온 용어</h4><dl>' + terms.map(function (t) {
+      return '<div class="row"><span class="t">' + esc_(t.term) + '</span>' +
+        '<span class="d">' + esc_(t.plain) + '</span></div>';
+    }).join('') + '</dl>';
+    termsEl.style.display = '';
+  } else {
+    termsEl.style.display = 'none';
+  }
 
   document.getElementById('briefingTags').innerHTML = (b.hashtags || [])
     .map(function (h) { return '<span>#' + esc_(h) + '</span>'; }).join('');
@@ -1199,6 +1253,32 @@ function renderBriefing(b) {
 
   panel.classList.toggle('is-stale', !!b.stale);
   panel.style.display = '';
+}
+
+document.querySelectorAll('#briefingMode button').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('#briefingMode button').forEach(function (b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    state.briefMode = btn.dataset.mode;
+    try { localStorage.setItem('ewequity.briefMode', state.briefMode); } catch (err) { /* 시크릿 모드 등 */ }
+    renderBriefing(briefingCache);
+  });
+});
+
+// 뉴스가 내 관심종목과 관련 있는지 제목·요약에서 이름을 찾아본다.
+// 서버는 관심종목을 모르므로(브라우저에만 저장) 이 매칭은 클라이언트에서 한다 —
+// 비용도 없고 관심종목이 서버로 나가지도 않는다.
+// 한계: 국내 종목명은 잘 맞지만, 해외 종목은 한글 표기가 달라(NVIDIA vs 엔비디아) 놓칠 수 있다.
+function matchedHoldings(news) {
+  const hay = (news.title || '') + ' ' + (news.description || '');
+  const hit = [];
+  watchlist.forEach(function (w) {
+    const name = String(w.name || '').trim();
+    // 너무 짧은 이름은 엉뚱한 곳에 걸리므로 제외한다.
+    if (name.length < 2) return;
+    if (hay.indexOf(name) !== -1 && hit.indexOf(name) === -1) hit.push(name);
+  });
+  return hit.slice(0, 2);
 }
 
 function renderNews(newsItems) {
@@ -1232,8 +1312,10 @@ function renderNews(newsItems) {
     const score = scores[n.link] || 0;
     const badge = score >= 5 ? '<span class="news-rank top">중요</span>'
       : score === 4 ? '<span class="news-rank high">주목</span>' : '';
+    const mine = matchedHoldings(n)
+      .map(function (nm) { return '<span class="news-mine">내 종목 · ' + esc_(nm) + '</span>'; }).join('');
     return '<div class="news-item">' +
-      '<a href="' + esc_(n.link) + '" target="_blank" rel="noopener">' + badge + esc_(n.title) + '</a>' +
+      '<a href="' + esc_(n.link) + '" target="_blank" rel="noopener">' + badge + mine + esc_(n.title) + '</a>' +
       '<div class="meta">' + esc_(n.pubDate || '') + '</div>' +
       '</div>';
   }).join('');
@@ -1762,6 +1844,9 @@ document.getElementById('clearWatchBtn').addEventListener('click', function () {
 // ---------- 초기 로드 + 자동 갱신 ----------
 function loadAll() {
   showPage(currentPage());
+  document.querySelectorAll('#briefingMode button').forEach(function (b) {
+    b.classList.toggle('active', b.dataset.mode === state.briefMode);
+  });
   setupBannerCheck();
   loadRates();
   loadHistory();
