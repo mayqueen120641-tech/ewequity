@@ -349,12 +349,30 @@
     font-size:11.5px;padding:5px 11px;border-radius:999px;cursor:pointer;font-family:inherit;
   }
   .ask-samples button:hover{background:var(--hover);color:var(--text);}
-  .ask-answer{
-    display:none;margin-top:14px;background:var(--bg);border:1px solid var(--panel-border);
-    border-left:3px solid var(--accent);border-radius:10px;padding:14px 16px;
-    font-size:13.5px;line-height:1.85;
+  /* 대화 말풍선 */
+  .chat-thread{
+    display:none;max-height:440px;overflow-y:auto;margin-bottom:12px;
+    padding-right:4px;
   }
-  .ask-answer.show{display:block;}
+  .chat-thread.show{display:block;}
+  .chat-msg{display:flex;margin-bottom:10px;}
+  .chat-msg.me{justify-content:flex-end;}
+  .chat-bubble{
+    max-width:82%;padding:11px 14px;border-radius:14px;
+    font-size:13.5px;line-height:1.8;white-space:pre-wrap;word-break:break-word;
+  }
+  .chat-msg.me .chat-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px;}
+  .chat-msg.ai .chat-bubble{
+    background:var(--bg);border:1px solid var(--panel-border);
+    border-bottom-left-radius:4px;color:var(--text);
+  }
+  .chat-msg.ai .chat-bubble.err{color:var(--sub);}
+  .chat-head-actions{display:flex;gap:6px;margin-left:auto;align-items:center;}
+  .chat-reset{
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+    font-size:11px;padding:5px 10px;border-radius:8px;cursor:pointer;font-family:inherit;
+  }
+  .chat-reset:hover{background:var(--hover);color:var(--text);}
   .ask-notice{
     margin-top:10px;padding:9px 12px;border-radius:8px;font-size:11.5px;line-height:1.6;
     background:#FDF6E3;border:1px solid #E8D9B0;color:#8A6D3B;
@@ -534,7 +552,11 @@
           <div class="briefing-head" style="margin-bottom:12px;">
             <h2>물어보기</h2>
             <span class="briefing-badge">AI</span>
+            <div class="chat-head-actions">
+              <button id="chatReset" class="chat-reset" type="button" style="display:none;">새 대화</button>
+            </div>
           </div>
+          <div class="chat-thread" id="chatThread"></div>
           <div class="ask-row">
             <input id="askInput" type="text" maxlength="200" placeholder="오늘 시장에 대해 물어보세요 (예: 코스피 왜 떨어졌어?)">
             <button id="askBtn" type="button">물어보기</button>
@@ -546,7 +568,6 @@
             <button type="button">코스피 왜 이렇게 움직였어?</button>
             <button type="button">환율이 내리면 뭐가 좋아져?</button>
           </div>
-          <div class="ask-answer" id="askAnswer"></div>
         </section>
 
         <section class="cards" id="cards">
@@ -1545,44 +1566,79 @@ function mockWeekly() {
 
 document.getElementById('weeklyRefresh').addEventListener('click', function () { loadWeekly(true); });
 
-// ---------- 대시보드에 물어보기 ----------
-// 관심종목은 브라우저에만 있으므로 질문할 때 심볼을 같이 보낸다.
-// 지표·브리핑·뉴스는 서버가 이미 갖고 있어서 보낼 필요가 없다.
+// ---------- 대시보드에 물어보기 (대화형) ----------
+// 매 질문이 독립적이면 "그럼 왜?" 같은 후속 질문을 못 알아듣는다. 최근 대화를 함께 보내
+// 맥락을 잇는다. 대시보드 데이터는 서버가 시스템 프롬프트에 넣으므로 여기선 안 보낸다.
+let chatLog = [];          // [{role:'user'|'assistant', text}]
+const CHAT_KEEP = 4;       // 서버로 보낼 최근 대화 수 (URL 길이 제한 때문에 제한)
+
+function chatBubble(role, text, extraHtml) {
+  const me = role === 'user';
+  return '<div class="chat-msg ' + (me ? 'me' : 'ai') + '">' +
+    '<div class="chat-bubble' + (extraHtml === 'ERR' ? ' err' : '') + '">' +
+    esc_(text) + (extraHtml && extraHtml !== 'ERR' ? extraHtml : '') +
+    '</div></div>';
+}
+
+function renderChat(pending) {
+  const el = document.getElementById('chatThread');
+  const has = chatLog.length || pending;
+  el.classList.toggle('show', !!has);
+  document.getElementById('chatReset').style.display = has ? '' : 'none';
+
+  el.innerHTML = chatLog.map(function (m) {
+    return chatBubble(m.role, m.text, m.extra);
+  }).join('') + (pending ? chatBubble('assistant', '오늘 데이터를 보고 답을 만드는 중이에요…') : '');
+
+  el.scrollTop = el.scrollHeight; // 항상 최신 메시지가 보이게
+}
+
 async function askQuestion(q) {
   const input = document.getElementById('askInput');
   const btn = document.getElementById('askBtn');
-  const el = document.getElementById('askAnswer');
   const question = (q != null ? q : input.value).trim();
   if (!question) return;
 
-  input.value = question;
+  chatLog.push({ role: 'user', text: question });
+  input.value = '';
   btn.disabled = true;
-  el.className = 'ask-answer show';
-  el.innerHTML = '<div class="loading">오늘 데이터를 보고 답을 만드는 중이에요…</div>';
+  renderChat(true);
 
   try {
+    // 이번 질문 직전까지의 대화만 보낸다(방금 넣은 질문은 q로 따로 감).
+    const history = chatLog.slice(0, -1).slice(-CHAT_KEEP)
+      .map(function (m) { return { role: m.role, text: m.text }; });
+
     const d = isConfigured()
-      ? await apiGet('ask', { q: question, symbols: watchlist.map(function (w) { return w.symbol; }).join(',') })
+      ? await apiGet('ask', {
+          q: question,
+          symbols: watchlist.map(function (w) { return w.symbol; }).join(','),
+          history: history.length ? JSON.stringify(history) : ''
+        })
       : { answer: '목업 모드입니다. GAS_URL을 연결하면 실제 데이터로 답합니다.', sources: [] };
 
-    if (d.error) { el.innerHTML = '<div class="empty">' + esc_(d.error) + '</div>'; return; }
-
-    let html = '<div>' + esc_(d.answer) + '</div>';
-    if (d.isAdvice) {
-      html += '<div class="ask-notice">투자 판단에 대한 질문이라 특정 종목을 사거나 팔라는 답은 드리지 않아요. ' +
-        '지금 상황을 이해하는 데 도움이 되는 정보만 정리했고, 결정은 본인 몫입니다.</div>';
+    if (d.error) {
+      chatLog.push({ role: 'assistant', text: d.error, extra: 'ERR' });
+    } else {
+      let extra = '';
+      if (d.isAdvice) {
+        extra += '<div class="ask-notice">투자 판단에 대한 질문이라 사거나 팔라는 답은 드리지 않아요. ' +
+          '결정은 본인 몫입니다.</div>';
+      }
+      if ((d.sources || []).length) {
+        extra += '<div class="ask-src"><h4>참고한 뉴스</h4>' + d.sources.map(function (s) {
+          return '<a href="' + esc_(s.link) + '" target="_blank" rel="noopener">· ' + esc_(s.title) + '</a>';
+        }).join('') + '</div>';
+      }
+      chatLog.push({ role: 'assistant', text: d.answer, extra: extra });
     }
-    if ((d.sources || []).length) {
-      html += '<div class="ask-src"><h4>참고한 뉴스</h4>' + d.sources.map(function (s) {
-        return '<a href="' + esc_(s.link) + '" target="_blank" rel="noopener">· ' + esc_(s.title) + '</a>';
-      }).join('') + '</div>';
-    }
-    el.innerHTML = html;
   } catch (err) {
     console.error(err);
-    el.innerHTML = '<div class="empty">답변을 불러오지 못했어요. 잠시 후 다시 시도해주세요.</div>';
+    chatLog.push({ role: 'assistant', text: '답변을 불러오지 못했어요. 잠시 후 다시 시도해주세요.', extra: 'ERR' });
   } finally {
     btn.disabled = false;
+    renderChat(false);
+    input.focus();
   }
 }
 
@@ -1593,6 +1649,10 @@ document.getElementById('askInput').addEventListener('keydown', function (e) {
 document.getElementById('askSamples').addEventListener('click', function (e) {
   const btn = e.target.closest('button');
   if (btn) askQuestion(btn.textContent.trim());
+});
+document.getElementById('chatReset').addEventListener('click', function () {
+  chatLog = [];
+  renderChat(false);
 });
 
 // ---------- 종목 등락 원인 설명 ----------

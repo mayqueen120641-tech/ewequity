@@ -33,7 +33,8 @@ function doGet(e) {
       case 'ask':
         result = getAsk(
           (e.parameter && e.parameter.q) || '',
-          (e.parameter && e.parameter.symbols) || ''
+          (e.parameter && e.parameter.symbols) || '',
+          (e.parameter && e.parameter.history) || ''
         );
         break;
       case 'explain':
@@ -1612,7 +1613,7 @@ var ASK_SCHEMA_ = {
   additionalProperties: false
 };
 
-function getAsk(question, symbolsCsv) {
+function getAsk(question, symbolsCsv, historyJson) {
   const q = String(question || '').trim();
   if (!q) return { error: '질문을 입력해주세요.' };
   if (q.length > ASK_MAX_LEN_) return { error: '질문이 너무 길어요. ' + ASK_MAX_LEN_ + '자 이내로 줄여주세요.' };
@@ -1621,8 +1622,13 @@ function getAsk(question, symbolsCsv) {
   const key = props.getProperty('ANTHROPIC_API_KEY');
   if (!key) return { error: 'AI 답변 기능은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
 
-  // 같은 질문을 반복하면 캐시로 돌려줘서 과금과 대기 시간을 줄인다.
-  const cacheKey = 'ask_' + md5_(q.toLowerCase() + '|' + String(symbolsCsv || ''));
+  // 이어서 묻기: 직전 대화를 같이 넘겨야 "그럼 왜?" 같은 질문을 알아듣는다.
+  // URL 길이 제한이 있어 최근 4개만, 각각 잘라서 받는다.
+  const history = parseAskHistory_(historyJson);
+
+  // 같은 대화 흐름에서 같은 질문을 반복하면 캐시로 돌려준다.
+  const cacheKey = 'ask_' + md5_(q.toLowerCase() + '|' + String(symbolsCsv || '') + '|' +
+    history.map(function (h) { return h.role + ':' + h.text; }).join('|'));
   const cached = cacheGet_(cacheKey);
   if (cached) return cached;
 
@@ -1631,7 +1637,7 @@ function getAsk(question, symbolsCsv) {
   }
 
   const news = collectAllNews_();
-  const result = callClaudeAsk_(key, q, buildAskContext_(news, symbolsCsv), news);
+  const result = callClaudeAsk_(key, q, buildAskContext_(news, symbolsCsv), history);
   if (!result) return { error: '답변을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
 
   // 링크는 백엔드가 붙인다(모델이 URL을 지어내지 못하게).
@@ -1650,6 +1656,21 @@ function getAsk(question, symbolsCsv) {
   };
   cachePut_(cacheKey, data, 1800); // 30분
   return data;
+}
+
+// 클라이언트가 보낸 대화 기록을 정리한다. 형식이 깨졌으면 그냥 무시하고 새 대화로 취급.
+function parseAskHistory_(raw) {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter(function (m) { return m && (m.role === 'user' || m.role === 'assistant') && m.text; })
+      .slice(-4)
+      .map(function (m) { return { role: m.role, text: String(m.text).slice(0, 400) }; });
+  } catch (err) {
+    return [];
+  }
 }
 
 // 날짜가 바뀌면 카운터를 리셋한다. 한도를 넘으면 false.
@@ -1750,20 +1771,31 @@ function buildAskContext_(news, symbolsCsv) {
   return ctx.join('\n\n');
 }
 
-function callClaudeAsk_(apiKey, question, context, news) {
-  const prompt =
-    context + '\n\n[질문]\n' + question + '\n\n' +
-    '위에 있는 데이터로 답해줘. 지표·브리핑·관심종목 시세·종목 순위·일정·뉴스가 다 들어있으니 ' +
-    '먼저 꼼꼼히 찾아보고, 있는 값은 **구체적인 숫자와 종목명으로** 답해. ' +
+function callClaudeAsk_(apiKey, question, context, history) {
+  // 대시보드 데이터는 대화 내내 그대로이므로 system에 둔다. messages에 넣으면 매 턴
+  // 통째로 반복돼 토큰이 낭비되고, 대화가 길어질수록 심해진다.
+  const system =
+    '너는 초보 투자자에게 오늘의 시장을 설명해주는 도우미야. ' +
+    '아래 데이터를 끝까지 살펴본 뒤 구체적인 숫자로 답하고, 투자 권유는 하지 않는다.\n\n' +
+    context + '\n\n' +
+    '[답변 규칙]\n' +
+    '- 위 데이터에 있는 값은 **구체적인 숫자와 종목명으로** 답해. ' +
     '"~일 가능성이 높습니다" 같은 추측 대신 실제 수치를 써.\n' +
-    '초보 투자자가 물어본다고 생각하고 쉬운 말로 3~5문장으로 답해줘. ' +
-    '어려운 용어를 쓰면 괄호로 짧게 풀어줘.\n' +
-    '정말 위 데이터에 없는 것(예: 재무제표, PER, 특정 종목의 과거 주가)을 물어보면 ' +
-    '없다고 솔직히 말하고, 대신 지금 데이터로 답할 수 있는 걸 한 가지 제안해줘.\n' +
-    '⚠️ "사도 돼?", "팔까?" 같은 질문이어도 **매수/매도를 추천하지 마.** ' +
-    '대신 지금 상황이 어떤지, 판단할 때 무엇을 봐야 하는지를 설명하고 ' +
-    '결정은 본인 몫이라는 점을 자연스럽게 전해. 그런 질문이면 isAdvice를 true로 해.\n' +
-    '목표가나 수익률 예측도 하지 마.';
+    '- 초보 투자자가 물어본다고 생각하고 쉬운 말로 3~5문장. 어려운 용어는 괄호로 짧게 풀어줘.\n' +
+    '- 앞선 대화가 있으면 그 맥락을 이어서 답해. "그럼 왜?"처럼 짧게 물어도 ' +
+    '무엇에 대한 질문인지 앞 대화에서 찾아낼 것.\n' +
+    '- 정말 데이터에 없는 것(재무제표, PER, 개별 종목 과거 주가)을 물으면 없다고 솔직히 말하고, ' +
+    '대신 지금 데이터로 답할 수 있는 걸 한 가지 제안해.\n' +
+    '- relatedNews에는 [오늘 뉴스] 목록의 번호만 쓴다. 근거로 쓴 뉴스가 없으면 빈 배열.\n' +
+    '- ⚠️ "사도 돼?", "팔까?" 같은 질문이어도 **매수/매도를 추천하지 마.** ' +
+    '지금 상황과 판단할 때 볼 것들을 설명하고, 결정은 본인 몫이라는 점을 자연스럽게 전해. ' +
+    '그런 질문이면 isAdvice를 true로 해.\n' +
+    '- 목표가나 수익률 예측도 하지 마.';
+
+  const messages = (history || []).map(function (h) {
+    return { role: h.role, content: h.text };
+  });
+  messages.push({ role: 'user', content: question });
 
   let res;
   try {
@@ -1776,9 +1808,8 @@ function callClaudeAsk_(apiKey, question, context, news) {
         model: 'claude-haiku-4-5',
         max_tokens: 1500,
         output_config: { format: { type: 'json_schema', schema: ASK_SCHEMA_ } },
-        system: '너는 초보 투자자에게 오늘의 시장을 설명해주는 도우미야. ' +
-          '주어진 데이터를 끝까지 살펴본 뒤 구체적인 숫자로 답하고, 투자 권유는 하지 않는다.',
-        messages: [{ role: 'user', content: prompt }]
+        system: system,
+        messages: messages
       })
     });
   } catch (err) {
