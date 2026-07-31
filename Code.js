@@ -858,10 +858,13 @@ function getCalendar(noCache) {
     });
   }
   if (finnhubKey) {
+    const weeks = dateChunks_(from, to, 7);
     jobs.push({
       name: 'earnings',
-      url: 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to + '&token=' + finnhubKey,
-      parse: function (text) { return parseMajorEarnings_(JSON.parse(text)); }
+      url: finnhubEarningsUrl_(finnhubKey, weeks[0].from, weeks[0].to),
+      parse: function (text) {
+        return parseMajorEarnings_(collectFinnhubEarnings_(finnhubKey, weeks, JSON.parse(text)));
+      }
     });
   }
   // 국내(코스피) 실적은 키가 필요 없다 — KIND는 공개 화면이라 그대로 조회한다.
@@ -910,6 +913,73 @@ function collectFredPages_(apiKey, from, to, firstPage) {
     }
   });
   return rows;
+}
+
+// Finnhub 실적 캘린더는 한 응답에 1500건까지만 준다. FRED와 달리 offset 같은 페이지 파라미터가
+// 없고, 넘치면 **날짜가 이른 쪽부터** 잘라낸다. 두 달을 통째로 요청했더니 1500건이 뒷달로 다
+// 채워져서 7월 실적이 하나도 안 들어왔다(아마존 7/31이 캘린더에서 사라진 원인).
+// 그래서 기간을 주 단위로 쪼개 받고, 그래도 한도가 꽉 찬 주는 실적 시즌이라 하루 단위로 다시 받는다.
+var FINNHUB_MAX_ROWS_ = 1500;
+
+function finnhubEarningsUrl_(apiKey, from, to) {
+  return 'https://finnhub.io/api/v1/calendar/earnings?from=' + from + '&to=' + to +
+    '&token=' + apiKey;
+}
+
+// [from, to]를 days일짜리 구간으로 나눈다. 마지막 구간은 to에서 잘린다.
+function dateChunks_(from, to, days) {
+  const out = [];
+  const end = new Date(from.slice(0, 4), Number(from.slice(5, 7)) - 1, Number(from.slice(8, 10)));
+  const stopAt = new Date(to.slice(0, 4), Number(to.slice(5, 7)) - 1, Number(to.slice(8, 10)));
+  const cur = end;
+  while (cur <= stopAt && out.length < 20) {
+    const last = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + days - 1);
+    out.push({ from: ymd_(cur), to: ymd_(last > stopAt ? stopAt : last) });
+    cur.setDate(cur.getDate() + days);
+  }
+  return out;
+}
+
+function ymd_(d) {
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function collectFinnhubEarnings_(apiKey, chunks, firstChunkJson) {
+  var rows = (firstChunkJson.earningsCalendar || []).slice();
+  const overflow = rows.length >= FINNHUB_MAX_ROWS_ ? [chunks[0]] : [];
+
+  const rest = chunks.slice(1);
+  if (rest.length) {
+    const got = fetchEarningsChunks_(apiKey, rest);
+    rows = rows.concat(got.rows);
+    overflow.push.apply(overflow, got.overflow);
+  }
+  if (overflow.length) {
+    var days = [];
+    overflow.forEach(function (c) { days = days.concat(dateChunks_(c.from, c.to, 1)); });
+    // 잘린 구간의 결과와 겹치지만, 어차피 아래에서 심볼+날짜로 중복을 걸러낸다.
+    rows = rows.concat(fetchEarningsChunks_(apiKey, days).rows);
+  }
+  return rows;
+}
+
+function fetchEarningsChunks_(apiKey, chunks) {
+  const jobs = chunks.map(function (c) {
+    return { url: finnhubEarningsUrl_(apiKey, c.from, c.to) };
+  });
+  var rows = [];
+  const overflow = [];
+  fetchJobsSafe_(jobs).forEach(function (res, i) {
+    try {
+      if (!res || res.getResponseCode() >= 400) return;
+      const got = JSON.parse(res.getContentText()).earningsCalendar || [];
+      rows = rows.concat(got);
+      if (got.length >= FINNHUB_MAX_ROWS_) overflow.push(chunks[i]);
+    } catch (err) {
+      // 이 구간만 건너뛴다 — 한 주가 빠져도 나머지 일정은 그대로 보여준다.
+    }
+  });
+  return { rows: rows, overflow: overflow };
 }
 
 // 예정된 발표일은 아직 데이터가 없는 상태라, include_release_dates_with_no_data=true를
@@ -1021,12 +1091,21 @@ function parseKindEarnings_(html) {
     .slice(0, 250);
 }
 
-function parseMajorEarnings_(json) {
-  const raw = json.earningsCalendar || [];
+// ⚠️ 인자는 응답 객체가 아니라 **행 배열**이다(collectFinnhubEarnings_가 여러 구간을 이어붙임).
+function parseMajorEarnings_(rows) {
   const wanted = {};
   MAJOR_EARNINGS_SYMBOLS_.forEach(function (s) { wanted[s] = true; });
-  return raw
-    .filter(function (e) { return wanted[String(e.symbol || '').toUpperCase()]; })
+  const seen = {};
+  return (rows || [])
+    .filter(function (e) {
+      const sym = String(e.symbol || '').toUpperCase();
+      if (!wanted[sym]) return false;
+      // 구간이 겹치게 다시 받은 날이 있어 같은 발표가 두 번 들어올 수 있다.
+      const key = sym + '|' + e.date;
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    })
     .map(function (e) { return { date: e.date, symbol: e.symbol, hour: e.hour || '' }; })
     .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
     .slice(0, 80);
