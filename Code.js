@@ -1631,7 +1631,7 @@ function getAsk(question, symbolsCsv) {
   }
 
   const news = collectAllNews_();
-  const result = callClaudeAsk_(key, q, safe_(getRates), getBriefing(), news, symbolsCsv);
+  const result = callClaudeAsk_(key, q, buildAskContext_(news, symbolsCsv), news);
   if (!result) return { error: '답변을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
 
   // 링크는 백엔드가 붙인다(모델이 URL을 지어내지 못하게).
@@ -1670,20 +1670,96 @@ function bumpAskCount_(props) {
   return true;
 }
 
-function callClaudeAsk_(apiKey, question, rates, brief, news, symbolsCsv) {
-  const headlines = news.map(function (n, i) { return i + '. ' + n.title; }).join('\n');
-  const watch = String(symbolsCsv || '').split(',').map(function (s) { return s.trim(); })
-    .filter(Boolean).slice(0, 20).join(', ');
+// 대시보드에 떠 있는 데이터를 전부 모아 넘긴다. 예전에는 지표·브리핑 요약·뉴스 제목만
+// 넘겨서, 관심종목 시세나 급등락 순위를 물으면 "자료에 없다"거나 추측으로 답했다.
+// 전부 이미 서버가 캐시해둔 값이라 추가 API 호출 없이 붙일 수 있다.
+function buildAskContext_(news, symbolsCsv) {
+  const ctx = [];
 
+  const rates = safe_(getRates);
+  if (rates && !rates.error) {
+    const label = { base_rate_kr: '기준금리(한)', base_rate_us: '기준금리(미)', usdkrw: '원/달러',
+      wti: 'WTI유가', kospi: '코스피', nasdaq: '나스닥', gold: '금', btc: '비트코인' };
+    const lines = Object.keys(label).map(function (k) {
+      const v = rates[k];
+      if (!v || v.error || v.value == null) return null;
+      return '- ' + label[k] + ': ' + v.value +
+        (v.changePct != null ? ' (' + v.changePct.toFixed(2) + '%)'
+          : v.change != null ? ' (' + v.change + ')' : '');
+    }).filter(Boolean);
+    if (lines.length) ctx.push('[오늘 지표]\n' + lines.join('\n'));
+  }
+
+  // 브리핑은 요약뿐 아니라 카테고리별 한 줄도 같이 넘긴다.
+  const brief = getBriefing();
+  if (brief && brief.summary) {
+    let b = '[오늘 브리핑]\n' + brief.summary;
+    if ((brief.sectors || []).length) {
+      b += '\n' + brief.sectors.map(function (x) { return '- ' + x.key + ': ' + x.line; }).join('\n');
+    }
+    ctx.push(b);
+  }
+
+  // 관심종목은 이름만 넘기면 "어땠는지" 물어봐도 답을 못 한다. 실제 시세를 붙인다.
+  const syms = String(symbolsCsv || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+  if (syms.length) {
+    const q = safe_(function () { return getQuotes(syms.join(','), false); });
+    const lines = ((q && q.quotes) || []).map(function (it) {
+      if (it.error || !it.quote) return '- ' + it.symbol + ': 시세 조회 실패';
+      return '- ' + it.symbol + ': ' + it.quote.value +
+        (it.quote.changePct != null ? ' (' + it.quote.changePct.toFixed(2) + '%)' : '');
+    });
+    if (lines.length) ctx.push('[사용자 관심종목 오늘 시세]\n' + lines.join('\n'));
+  }
+
+  // 급등락 질문에 답하려면 순위표가 필요하다.
+  const mk = safe_(function () { return getMarket(false); });
+  const items = (mk && mk.items) || [];
+  if (items.length) {
+    const fmt = function (x) { return x.name + ' ' + x.changePct.toFixed(2) + '%'; };
+    const byUp = items.slice().sort(function (a, b) { return b.changePct - a.changePct; });
+    ctx.push('[코스피 상위 100종목 중]\n' +
+      '- 시가총액 상위: ' + items.slice(0, 8).map(fmt).join(', ') + '\n' +
+      '- 오늘 많이 오른 종목: ' + byUp.slice(0, 6).map(fmt).join(', ') + '\n' +
+      '- 오늘 많이 내린 종목: ' + byUp.slice(-6).reverse().map(fmt).join(', '));
+  }
+
+  // 일정 질문("이번 주 실적발표 뭐 있어?")에 답하려면 캘린더가 필요하다.
+  const cal = safe_(function () { return getCalendar(false); });
+  if (cal && !cal.error) {
+    const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+    const until = Utilities.formatDate(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyy-MM-dd');
+    const soon = function (arr, fn) {
+      return (arr || []).filter(function (x) { return x.date >= today && x.date <= until; })
+        .slice(0, 10).map(fn);
+    };
+    const lines = []
+      .concat(soon(cal.macro, function (x) { return '- ' + x.date + ' 지표: ' + x.name; }))
+      .concat(soon(cal.krEarnings, function (x) { return '- ' + x.date + ' 국내실적: ' + x.corp; }))
+      .concat(soon(cal.earnings, function (x) { return '- ' + x.date + ' 해외실적: ' + x.symbol; }));
+    if (lines.length) ctx.push('[앞으로 7일 일정]\n' + lines.join('\n'));
+  }
+
+  // 뉴스는 제목만으론 내용을 알 수 없어 요약도 함께 넘긴다.
+  if (news.length) {
+    ctx.push('[오늘 뉴스]\n' + news.slice(0, 16).map(function (n, i) {
+      return i + '. ' + n.title + ' — ' + String(n.description || '').slice(0, 110);
+    }).join('\n'));
+  }
+
+  return ctx.join('\n\n');
+}
+
+function callClaudeAsk_(apiKey, question, context, news) {
   const prompt =
-    '[오늘 지표]\n' + JSON.stringify(rates) + '\n\n' +
-    (brief && brief.summary ? '[오늘 브리핑]\n' + brief.summary + '\n\n' : '') +
-    '[오늘 뉴스 헤드라인]\n' + headlines + '\n\n' +
-    (watch ? '[사용자가 담아둔 관심종목]\n' + watch + '\n\n' : '') +
-    '[질문]\n' + question + '\n\n' +
-    '위 데이터에 근거해서만 답해줘. 데이터에 없는 걸 아는 척하지 말고, 모르면 모른다고 해.\n' +
+    context + '\n\n[질문]\n' + question + '\n\n' +
+    '위에 있는 데이터로 답해줘. 지표·브리핑·관심종목 시세·종목 순위·일정·뉴스가 다 들어있으니 ' +
+    '먼저 꼼꼼히 찾아보고, 있는 값은 **구체적인 숫자와 종목명으로** 답해. ' +
+    '"~일 가능성이 높습니다" 같은 추측 대신 실제 수치를 써.\n' +
     '초보 투자자가 물어본다고 생각하고 쉬운 말로 3~5문장으로 답해줘. ' +
     '어려운 용어를 쓰면 괄호로 짧게 풀어줘.\n' +
+    '정말 위 데이터에 없는 것(예: 재무제표, PER, 특정 종목의 과거 주가)을 물어보면 ' +
+    '없다고 솔직히 말하고, 대신 지금 데이터로 답할 수 있는 걸 한 가지 제안해줘.\n' +
     '⚠️ "사도 돼?", "팔까?" 같은 질문이어도 **매수/매도를 추천하지 마.** ' +
     '대신 지금 상황이 어떤지, 판단할 때 무엇을 봐야 하는지를 설명하고 ' +
     '결정은 본인 몫이라는 점을 자연스럽게 전해. 그런 질문이면 isAdvice를 true로 해.\n' +
@@ -1698,10 +1774,10 @@ function callClaudeAsk_(apiKey, question, rates, brief, news, symbolsCsv) {
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       payload: JSON.stringify({
         model: 'claude-haiku-4-5',
-        max_tokens: 1200,
+        max_tokens: 1500,
         output_config: { format: { type: 'json_schema', schema: ASK_SCHEMA_ } },
         system: '너는 초보 투자자에게 오늘의 시장을 설명해주는 도우미야. ' +
-          '주어진 데이터 안에서만 답하고, 투자 권유는 하지 않는다.',
+          '주어진 데이터를 끝까지 살펴본 뒤 구체적인 숫자로 답하고, 투자 권유는 하지 않는다.',
         messages: [{ role: 'user', content: prompt }]
       })
     });
