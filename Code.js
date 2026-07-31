@@ -630,6 +630,72 @@ function parseNaverSise_(html) {
   return out;
 }
 
+// ---- 종목별 기간 수익률 ----
+// "삼성전자 한 달 전보다?" 같은 질문에 답하려면 과거 주가가 필요하다.
+// 3개월치를 한 번 받아서 1주/1개월/3개월 전 대비를 모두 계산한다(종목당 호출 1회).
+// 과거 주가는 자주 안 바뀌므로 1시간 캐시로 묶어 매 질문마다 다시 받지 않게 한다.
+var PERF_MAX_ = 25;
+
+function getPerf(symbolsCsv, noCache) {
+  const symbols = String(symbolsCsv || '')
+    .split(',').map(function (s) { return s.trim(); })
+    .filter(function (s) { return s && s.length <= 40; })
+    .slice(0, PERF_MAX_);
+  if (!symbols.length) return { perf: [] };
+
+  const cacheKey = 'perf_' + md5_(symbols.join(',').toLowerCase());
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const jobs = symbols.map(function (s) {
+    return {
+      name: s,
+      url: 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(s) +
+        '?interval=1d&range=3mo'
+    };
+  });
+  const responses = fetchJobsSafe_(jobs);
+
+  const perf = jobs.map(function (j, i) {
+    try {
+      const res = responses[i];
+      if (!res || res.getResponseCode() >= 400) throw new Error('조회 실패');
+      const points = parseYahooPoints_(JSON.parse(res.getContentText()));
+      if (points.length < 2) throw new Error('데이터 부족');
+      const last = points[points.length - 1];
+      return {
+        symbol: j.name,
+        price: last.close,
+        w1: pctChangeSince_(points, 7),
+        m1: pctChangeSince_(points, 30),
+        m3: pctChangeSince_(points, 90)
+      };
+    } catch (err) {
+      return { symbol: j.name, error: String(err) };
+    }
+  });
+
+  const data = { perf: perf };
+  cachePut_(cacheKey, data, 3600); // 1시간
+  return data;
+}
+
+// 며칠 전 종가 대비 등락률. 휴장일이 있으므로 인덱스가 아니라 날짜로 찾는다.
+function pctChangeSince_(points, daysAgo) {
+  const last = points[points.length - 1];
+  const target = new Date(new Date(last.date).getTime() - daysAgo * 24 * 60 * 60 * 1000);
+  const targetStr = Utilities.formatDate(target, 'Asia/Seoul', 'yyyy-MM-dd');
+
+  // 목표 날짜 이하 중 가장 최근 종가를 쓴다(그날이 휴장이면 직전 거래일).
+  let base = null;
+  for (var i = points.length - 1; i >= 0; i--) {
+    if (points[i].date <= targetStr) { base = points[i]; break; }
+  }
+  if (!base) base = points[0]; // 조회 기간보다 과거면 가장 오래된 값으로
+  if (!base.close) return null;
+  return Math.round(((last.close - base.close) / base.close) * 10000) / 100;
+}
+
 function md5_(s) {
   return Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, s)
     .map(function (b) { return ((b & 0xFF) + 0x100).toString(16).slice(1); })
@@ -705,9 +771,15 @@ function getHistory(range, noCache) {
 function getYahooHistory_(symbol, range) {
   const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) +
     '?interval=1d&range=' + range;
-  const json = fetchJson_(url);
+  const points = parseYahooPoints_(fetchJson_(url));
+  if (!points.length) throw new Error('Yahoo Finance 히스토리 응답 없음: ' + symbol);
+  return points;
+}
+
+// 차트용 히스토리와 기간 수익률(getPerf)이 같은 응답 형태를 쓰므로 파싱을 공통으로 뺐다.
+function parseYahooPoints_(json) {
   const result = json.chart && json.chart.result && json.chart.result[0];
-  if (!result) throw new Error('Yahoo Finance 히스토리 응답 없음: ' + symbol);
+  if (!result) return [];
   const timestamps = result.timestamp || [];
   const closes = (result.indicators.quote[0] && result.indicators.quote[0].close) || [];
   const points = [];
@@ -1284,8 +1356,13 @@ function getExplain(symbol, name, noCache) {
     .filter(Boolean)
     .slice(0, 4);
 
+  // 기간 수익률도 같이 준다 — "오늘 왜 움직였나"를 볼 때 최근 흐름이 함께 보이면
+  // 오늘 하루 등락이 추세 속에서 어떤 의미인지 판단하기 쉽다.
+  const pf = safe_(function () { return getPerf(sym, false); });
+  const perf = ((pf && pf.perf) || []).filter(function (p) { return !p.error; })[0] || null;
+
   const data = {
-    symbol: sym, name: nm, quote: quote,
+    symbol: sym, name: nm, quote: quote, perf: perf,
     explanation: result.explanation,
     confidence: result.confidence,
     evidence: evidence,
@@ -1733,8 +1810,29 @@ function buildAskContext_(news, symbolsCsv) {
     if (lines.length) ctx.push('[사용자 관심종목 오늘 시세]\n' + lines.join('\n'));
   }
 
+  // "한 달 전보다?" 같은 질문에 답하려면 과거 주가가 필요하다.
+  // 관심종목 + 시총 상위 종목을 합쳐서 계산한다 — 담아두지 않은 대형주를 물어도 답하도록.
+  const mkForPerf = safe_(function () { return getMarket(false); });
+  const topSyms = (((mkForPerf && mkForPerf.items) || []).slice(0, 10))
+    .map(function (x) { return x.code + '.KS'; });
+  const perfSyms = syms.concat(topSyms).filter(function (s, i, a) { return a.indexOf(s) === i; });
+  if (perfSyms.length) {
+    const pf = safe_(function () { return getPerf(perfSyms.join(','), false); });
+    const nameOf = {};
+    (((mkForPerf && mkForPerf.items) || [])).forEach(function (x) { nameOf[x.code + '.KS'] = x.name; });
+    const lines = ((pf && pf.perf) || [])
+      .filter(function (p) { return !p.error; })
+      .map(function (p) {
+        const nm = nameOf[p.symbol] ? nameOf[p.symbol] + '(' + p.symbol + ')' : p.symbol;
+        const fmt = function (v) { return v == null ? '?' : (v > 0 ? '+' : '') + v + '%'; };
+        return '- ' + nm + ': 현재 ' + p.price +
+          ' / 1주 전 대비 ' + fmt(p.w1) + ', 1개월 전 대비 ' + fmt(p.m1) + ', 3개월 전 대비 ' + fmt(p.m3);
+      });
+    if (lines.length) ctx.push('[종목별 기간 수익률]\n' + lines.join('\n'));
+  }
+
   // 급등락 질문에 답하려면 순위표가 필요하다.
-  const mk = safe_(function () { return getMarket(false); });
+  const mk = mkForPerf;
   const items = (mk && mk.items) || [];
   if (items.length) {
     const fmt = function (x) { return x.name + ' ' + x.changePct.toFixed(2) + '%'; };

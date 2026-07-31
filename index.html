@@ -1689,9 +1689,21 @@ async function loadWhy(symbol, name) {
 
     if (d.quote && !d.quote.error && d.quote.changePct != null) {
       const cls = changeClass(d.quote.changePct);
-      quoteEl.innerHTML = fmtNum(d.quote.value, 2) +
+      let line = fmtNum(d.quote.value, 2) +
         ' <span class="change ' + cls + '">' + changeArrow(d.quote.changePct) + ' ' +
         fmtNum(Math.abs(d.quote.changePct), 2) + '%</span>';
+      // 오늘 등락만 보면 추세 속 위치를 알 수 없어서 기간 수익률을 함께 보여준다.
+      if (d.perf) {
+        const per = [['1주', d.perf.w1], ['1개월', d.perf.m1], ['3개월', d.perf.m3]]
+          .filter(function (p) { return p[1] != null; })
+          .map(function (p) {
+            const c = changeClass(p[1]);
+            return p[0] + ' <span class="change ' + c + '">' +
+              (p[1] > 0 ? '+' : '') + fmtNum(p[1], 2) + '%</span>';
+          });
+        if (per.length) line += '<div style="margin-top:6px;font-size:12px;">' + per.join(' · ') + '</div>';
+      }
+      quoteEl.innerHTML = line;
     }
 
     if (!d.explanation) {
@@ -1720,6 +1732,7 @@ async function loadWhy(symbol, name) {
 function mockWhy(name) {
   return {
     quote: { value: 71500, changePct: -3.2 },
+    perf: { w1: 2.1, m1: -8.4, m3: 12.7 },
     explanation: name + '은(는) 개별 종목의 특별한 악재보다는 시장 전체가 하락한 흐름을 따라간 것으로 보입니다. (목업 데이터)',
     confidence: 'medium',
     evidence: [{ title: '목업 뉴스 제목', link: '#', note: '화면 확인용 예시입니다.' }]
