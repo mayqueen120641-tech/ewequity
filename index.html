@@ -397,6 +397,38 @@
   .wk-terms .d{flex:1;min-width:0;color:var(--sub);line-height:1.55;}
 
   /* ---------- 종목 등락 설명 모달 ---------- */
+  /* ---- 재무 분석 ---- */
+  .fin-note{
+    font-size:11.5px;color:var(--sub);line-height:1.65;margin-top:12px;
+    padding-top:12px;border-top:1px solid var(--panel-border);
+  }
+  table.rank .c-metric{width:78px;}
+  table.rank .c-metric.dim{color:var(--sub);}
+  .fin-basis{font-size:11px;color:var(--sub);font-weight:400;margin-left:6px;}
+  /* 밸류에이션 칩 — 설명 모달과 재무 모달에서 같이 쓴다. */
+  .val-grid{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px;}
+  .val-item{
+    flex:1 1 96px;background:var(--hover);border:1px solid var(--panel-border);
+    border-radius:9px;padding:9px 10px;
+  }
+  .val-item .k{font-size:10.5px;color:var(--sub);margin-bottom:3px;}
+  .val-item .v{font-size:15px;font-weight:600;}
+  .val-item .v.none{font-size:12px;font-weight:400;color:var(--sub);}
+  /* 3개년 추이 — 캔버스를 쓰면 숨겨진 동안 폭이 0이 되는 문제가 있어 div 막대로 그린다. */
+  .trend{margin-top:16px;padding-top:14px;border-top:1px solid var(--panel-border);}
+  .trend h4{margin:0 0 10px;font-size:12px;color:var(--sub);font-weight:500;}
+  .trend-row{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12px;}
+  .trend-row .ty{flex:0 0 38px;color:var(--sub);}
+  .trend-row .tbar{flex:1;min-width:0;height:16px;background:var(--hover);border-radius:4px;overflow:hidden;}
+  .trend-row .tbar i{display:block;height:100%;border-radius:4px;background:var(--accent);}
+  .trend-row .tbar i.neg{background:var(--down);}
+  .trend-row .tv{flex:0 0 74px;text-align:right;}
+  .trend-tabs{display:flex;gap:6px;margin-bottom:10px;}
+  .trend-tabs button{
+    padding:4px 10px;font-size:11px;border-radius:999px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+  }
+  .trend-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
   .modal-back{
     display:none;position:fixed;inset:0;z-index:50;
     background:rgba(74,59,46,.32);align-items:flex-start;justify-content:center;
@@ -492,6 +524,7 @@
       <a href="#/search"><span class="nav-icon">⌕</span><span class="nav-label">종목 검색</span></a>
       <a href="#/news"><span class="nav-icon">▦</span><span class="nav-label">뉴스</span></a>
       <a href="#/calendar"><span class="nav-icon">▩</span><span class="nav-label">캘린더</span></a>
+      <a href="#/finance"><span class="nav-icon">▨</span><span class="nav-label">재무 분석</span></a>
       <a href="#/portfolio"><span class="nav-icon">◔</span><span class="nav-label">포트폴리오</span></a>
       <a href="#/report"><span class="nav-icon">▣</span><span class="nav-label">리포트</span></a>
       <a href="#/settings"><span class="nav-icon">⚙</span><span class="nav-label">설정</span></a>
@@ -721,6 +754,52 @@
         </section>
       </section>
 
+      <!-- ========== 재무 분석 ========== -->
+      <section class="page" id="page-finance">
+        <div class="page-head">
+          <h1>재무 분석</h1>
+          <p>DART 전자공시의 재무제표로 계산한 PER·PBR·ROE입니다. 종목을 누르면 3개년 실적 추이를 볼 수 있어요.</p>
+        </div>
+        <section class="panel">
+          <div class="rank-head">
+            <h2>기업가치 지표 <span class="watch-count" id="finBasis"></span></h2>
+            <div class="rank-tabs" id="finTabs">
+              <button data-sort="per" class="active">PER 낮은 순</button>
+              <button data-sort="pbr">PBR 낮은 순</button>
+              <button data-sort="roe">ROE 높은 순</button>
+            </div>
+          </div>
+          <div class="rank-wrap">
+            <table class="rank">
+              <thead>
+                <tr>
+                  <th class="c-rank">#</th>
+                  <th class="c-name">종목</th>
+                  <th class="c-metric">PER</th>
+                  <th class="c-metric">PBR</th>
+                  <th class="c-metric">ROE</th>
+                  <th class="c-metric">영업이익률</th>
+                  <th class="c-cap">시가총액</th>
+                </tr>
+              </thead>
+              <tbody id="finBody">
+                <tr><td colspan="7" class="rank-empty">불러오는 중…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="fin-note">
+            <b>PER</b> 시가총액 ÷ 당기순이익 — 벌어들이는 이익 대비 주가가 몇 배인지.
+            <b>PBR</b> 시가총액 ÷ 자본총계 — 회사가 가진 순자산 대비 몇 배인지.
+            <b>ROE</b> 당기순이익 ÷ 자본총계 — 자기 돈으로 얼마나 벌었는지.<br>
+            숫자가 낮다고 반드시 싼 것은 아닙니다. 앞으로 실적이 나빠질 것이란 전망이 주가에
+            먼저 반영돼 PER이 낮아진 경우도 많습니다. 판단의 근거로만 쓰세요.<br>
+            적자 기업은 PER이 <b>–</b>로 표시됩니다(음수 PER은 의미가 없어 계산하지 않습니다).
+            은행·보험은 예금이 부채라 부채비율이 원래 높고, 매출액 항목이 없어 영업이익률이 비어 있습니다.
+            우선주가 많은 종목은 시가총액에 보통주만 잡혀 PER·PBR이 실제보다 높게 나올 수 있습니다.
+          </div>
+        </section>
+      </section>
+
       <!-- ========== 포트폴리오 (준비 중) ========== -->
       <section class="page" id="page-portfolio">
         <div class="page-head">
@@ -779,6 +858,20 @@
 </div>
 
 <!-- 종목 등락 원인 설명 -->
+<div class="modal-back" id="finBack">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="finTitle">
+    <div class="modal-head">
+      <h3 id="finTitle">-</h3>
+      <button class="modal-close" id="finClose" type="button" aria-label="닫기">✕</button>
+    </div>
+    <div class="modal-quote" id="finSub"></div>
+    <div id="finDetail"></div>
+    <div class="modal-foot">
+      DART 전자공시 재무제표 기준입니다. 투자 참고용이며, 투자 판단의 책임은 본인에게 있습니다.
+    </div>
+  </div>
+</div>
+
 <div class="modal-back" id="whyBack">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="whyTitle">
     <div class="modal-head">
@@ -795,6 +888,7 @@
 
 <script>
 const state = { range: '3M', category: 'all', newsSort: 'importance', rankView: 'cap',
+  finSort: 'per',
   // 초보자 모드는 취향이라 브라우저에 기억해둔다.
   briefMode: localStorage.getItem('ewequity.briefMode') || 'plain',
   chart: null, usingMock: false };
@@ -1809,6 +1903,204 @@ document.querySelectorAll('#rankTabs button').forEach(function (btn) {
   });
 });
 
+
+// ---------- 재무 분석 (DART) ----------
+// 순위표는 트리거가 하루 한 번 채워둔 스냅샷을 읽는다(재무는 분기에 한 번만 바뀐다).
+// 종목을 누르면 그때 개별 조회로 3개년 추이까지 받아온다.
+let finCache = null;
+let finLoaded = false;
+let finTrendMetric = 'revenue';
+let finTrendData = null;
+
+// 지표는 '없음'과 '0'이 전혀 다른 뜻이라 구분해서 표시한다.
+// 적자라서 PER이 없는 것과, 데이터를 못 받은 것도 다르다.
+function fmtMetric(v, suffix) {
+  if (v === null || v === undefined) return '<span class="c-metric dim">–</span>';
+  return fmtNum(v, 2) + (suffix || '');
+}
+
+function renderFinRank() {
+  const body = document.getElementById('finBody');
+  const basis = document.getElementById('finBasis');
+  if (!finCache || !finCache.rows || !finCache.rows.length) {
+    body.innerHTML = '<tr><td colspan="7" class="rank-empty">' +
+      ((finCache && finCache.error) || '재무 데이터를 불러오지 못했어요.') + '</td></tr>';
+    basis.textContent = '';
+    return;
+  }
+  basis.textContent = finCache.year + '년 사업보고서 · ' + finCache.rows.length + '종목';
+  body.innerHTML = finCache.rows.slice(0, 40).map(function (x, i) {
+    return '<tr data-code="' + esc_(x.code) + '" data-name="' + esc_(x.name) + '">' +
+      '<td class="c-rank">' + (i + 1) + '</td>' +
+      '<td class="c-name">' + esc_(x.name) + '</td>' +
+      '<td class="c-metric">' + fmtMetric(x.per) + '</td>' +
+      '<td class="c-metric">' + fmtMetric(x.pbr) + '</td>' +
+      '<td class="c-metric">' + fmtMetric(x.roe, '%') + '</td>' +
+      '<td class="c-metric">' + fmtMetric(x.opMargin, '%') + '</td>' +
+      '<td class="c-cap">' + fmtCap(x.marketCap) + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+// 정렬 탭을 바꾸면 서버를 다시 부르는데, 그동안 이전 정렬 결과가 그대로 남아 있으면
+// "탭을 눌러도 안 바뀐다"로 보인다. 요청 중임을 먼저 표시한다.
+// 늦게 도착한 이전 요청이 최신 결과를 덮어쓰지 않도록 요청 번호로 막는다(워치리스트와 같은 방식).
+let finReqSeq = 0;
+
+async function loadFinRank(force) {
+  const seq = ++finReqSeq;
+  const body = document.getElementById('finBody');
+  body.innerHTML = '<tr><td colspan="7" class="rank-empty">불러오는 중…</td></tr>';
+  try {
+    const data = isConfigured() ? await apiGet('finrank', { sort: state.finSort }) : mockFinRank();
+    if (seq !== finReqSeq) return;
+    finCache = data;
+  } catch (err) {
+    console.error(err);
+    if (seq !== finReqSeq) return;
+    finCache = { rows: [], error: '재무 데이터를 불러오지 못했어요.' };
+  }
+  renderFinRank();
+}
+
+function mockFinRank() {
+  return {
+    year: 2025, total: 3,
+    rows: [
+      { code: '005930', name: '삼성전자(목업)', marketCap: 1534600, per: 33.95, pbr: 3.52, roe: 10.36, opMargin: 13.07 },
+      { code: '015760', name: '한국전력(목업)', marketCap: 420000, per: 2.58, pbr: 0.45, roe: 17.57, opMargin: 13.85 },
+      { code: '051910', name: 'LG화학(목업)', marketCap: 210000, per: null, pbr: 0.39, roe: -2.07, opMargin: 2.57 }
+    ]
+  };
+}
+
+// ---- 재무 상세 모달 ----
+const finBack = document.getElementById('finBack');
+
+function openFin(code, name) {
+  document.getElementById('finTitle').textContent = name + ' — 재무';
+  document.getElementById('finSub').textContent = '불러오는 중…';
+  document.getElementById('finDetail').innerHTML = '';
+  finTrendData = null;
+  finTrendMetric = 'revenue';
+  finBack.classList.add('show');
+  loadFin(code, name);
+}
+
+function closeFin() { finBack.classList.remove('show'); }
+document.getElementById('finClose').addEventListener('click', closeFin);
+finBack.addEventListener('click', function (ev) { if (ev.target === finBack) closeFin(); });
+
+const TREND_LABELS = { revenue: '매출액', operatingProfit: '영업이익', netIncome: '당기순이익' };
+
+// 억/조 단위로 줄여서 보여준다. DART 금액은 원 단위다.
+function fmtWon(v) {
+  if (v === null || v === undefined) return '–';
+  const abs = Math.abs(v);
+  const sign = v < 0 ? '-' : '';
+  if (abs >= 1e12) return sign + (abs / 1e12).toFixed(1) + '조';
+  if (abs >= 1e8) return sign + Math.round(abs / 1e8).toLocaleString() + '억';
+  return sign + Math.round(abs).toLocaleString();
+}
+
+function renderTrend() {
+  const el = document.getElementById('finTrend');
+  if (!el || !finTrendData) return;
+  const rows = finTrendData.filter(function (r) { return r[finTrendMetric] !== undefined && r[finTrendMetric] !== null; });
+  if (!rows.length) { el.innerHTML = '<div class="empty">이 항목은 공시에 없어요.</div>'; return; }
+  // 막대 길이는 절대값 최대치 기준. 적자 연도는 색을 바꿔 방향을 알 수 있게 한다.
+  const max = Math.max.apply(null, rows.map(function (r) { return Math.abs(r[finTrendMetric]); })) || 1;
+  el.innerHTML = rows.map(function (r) {
+    const v = r[finTrendMetric];
+    const pct = Math.max(2, Math.round(Math.abs(v) / max * 100));
+    return '<div class="trend-row">' +
+      '<span class="ty">' + r.year + '</span>' +
+      '<span class="tbar"><i class="' + (v < 0 ? 'neg' : '') + '" style="width:' + pct + '%"></i></span>' +
+      '<span class="tv">' + fmtWon(v) + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+async function loadFin(code, name) {
+  const sub = document.getElementById('finSub');
+  const detail = document.getElementById('finDetail');
+  try {
+    const d = isConfigured() ? await apiGet('finance', { symbol: code }) : mockFin();
+    if (d.error) { sub.textContent = ''; detail.innerHTML = '<div class="empty">' + esc_(d.error) + '</div>'; return; }
+
+    sub.textContent = d.year + '년 사업보고서 기준 · 시가총액 ' + fmtCap(d.marketCap);
+
+    const v = d.valuation || {};
+    const chip = function (k, val, suffix, noneText) {
+      const has = val !== null && val !== undefined;
+      return '<div class="val-item"><div class="k">' + k + '</div><div class="v' + (has ? '' : ' none') + '">' +
+        (has ? fmtNum(val, 2) + (suffix || '') : (noneText || '–')) + '</div></div>';
+    };
+    let html = '<div class="val-grid">' +
+      chip('PER', v.per, '배', v.loss ? '적자' : '–') +
+      chip('PBR', v.pbr, '배') +
+      chip('ROE', v.roe, '%') +
+      chip('영업이익률', v.opMargin, '%') +
+      chip('부채비율', v.debtRatio, '%') +
+      '</div>';
+
+    finTrendData = d.trend || [];
+    if (finTrendData.length) {
+      html += '<div class="trend"><h4>실적 추이</h4>' +
+        '<div class="trend-tabs" id="finTrendTabs">' +
+        Object.keys(TREND_LABELS).map(function (k) {
+          return '<button data-metric="' + k + '"' + (k === 'revenue' ? ' class="active"' : '') + '>' +
+            TREND_LABELS[k] + '</button>';
+        }).join('') +
+        '</div><div id="finTrend"></div></div>';
+    }
+    detail.innerHTML = html;
+    renderTrend();
+
+    const tabs = document.getElementById('finTrendTabs');
+    if (tabs) {
+      tabs.addEventListener('click', function (ev) {
+        const btn = ev.target.closest('button[data-metric]');
+        if (!btn) return;
+        tabs.querySelectorAll('button').forEach(function (b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        finTrendMetric = btn.dataset.metric;
+        renderTrend();
+      });
+    }
+  } catch (err) {
+    console.error(err);
+    sub.textContent = '';
+    detail.innerHTML = '<div class="empty">재무 정보를 불러오지 못했어요.</div>';
+  }
+}
+
+function mockFin() {
+  return {
+    code: '005930', name: '삼성전자(목업)', year: 2025, marketCap: 1534600,
+    valuation: { per: 33.95, pbr: 3.52, roe: 10.36, opMargin: 13.07, debtRatio: 29.9, loss: false },
+    trend: [
+      { year: 2023, revenue: 258935500000000, operatingProfit: 6566900000000, netIncome: 15487100000000 },
+      { year: 2024, revenue: 300875900000000, operatingProfit: 32725700000000, netIncome: 34451400000000 },
+      { year: 2025, revenue: 333600000000000, operatingProfit: 43600000000000, netIncome: 45200000000000 }
+    ]
+  };
+}
+
+document.getElementById('finBody').addEventListener('click', function (ev) {
+  const tr = ev.target.closest('tr[data-code]');
+  if (tr) openFin(tr.getAttribute('data-code'), tr.getAttribute('data-name'));
+});
+
+document.querySelectorAll('#finTabs button').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    document.querySelectorAll('#finTabs button').forEach(function (b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    state.finSort = btn.dataset.sort;
+    loadFinRank();
+  });
+});
+
 // ---------- 관심종목(워치리스트) ----------
 // 목록은 브라우저에만 저장한다. 서버에 두려면 공개 URL(ANYONE_ANONYMOUS)에 쓰기
 // 엔드포인트를 열어야 하는데, 그러면 URL을 아는 누구나 남의 목록을 바꿀 수 있다.
@@ -2013,7 +2305,7 @@ document.querySelectorAll('#newsSort button').forEach(function (btn) {
 // ---------- 페이지 전환 (해시 라우터) ----------
 // 정적 HTML 한 장이라 서버 라우팅이 없다. 해시(#/dashboard)로 화면만 갈아끼운다.
 // 새로고침해도 보던 페이지가 유지되고, 뒤로가기도 자연히 동작한다.
-const PAGES = ['dashboard', 'watchlist', 'market', 'search', 'news', 'calendar', 'portfolio', 'report', 'settings'];
+const PAGES = ['dashboard', 'watchlist', 'market', 'search', 'news', 'calendar', 'finance', 'portfolio', 'report', 'settings'];
 
 function currentPage() {
   const name = (location.hash || '').replace(/^#\/?/, '');
@@ -2033,6 +2325,8 @@ function showPage(name) {
   if (name === 'settings') renderSettings();
   // 리포트는 AI 호출이 붙으므로 그 페이지를 열 때만, 그것도 한 번만 불러온다.
   if (name === 'report' && !weeklyLoaded) { weeklyLoaded = true; loadWeekly(); }
+  // 재무는 하루 한 번 갱신되는 값이라 페이지를 처음 열 때만 부르면 된다.
+  if (name === 'finance' && !finLoaded) { finLoaded = true; loadFinRank(); }
   window.scrollTo(0, 0);
 }
 

@@ -2237,18 +2237,24 @@ function refreshDartCorpMap() {
 // 만났을 때 그 회사의 corp_code에 **다음 회사의 stock_code**가 붙는다.
 // 실제로 SK하이닉스에 바로 앞 비상장사의 고유번호가 매칭됐다 — 엉뚱한 회사의
 // 재무제표가 표시되는 버그라 화면만 봐서는 못 잡는다.
-var CORP_LIST_RE_ = /<list>([\s\S]{0,800}?)<\/list>/g;
+// <list> 블록을 전부 훑으면 11만 번을 도는데 20MB 문서라 요청 시간을 다 잡아먹는다.
+// 필요한 건 상장사 3,900여 건뿐이므로 **6자리 종목코드를 앵커로** 잡고, 거기서 뒤로
+// 조금만 되짚어 같은 블록의 corp_code를 찾는다(각 <list>는 corp_code로 시작한다).
+// 되짚는 창을 짧게 묶어두면 앞 블록으로 넘어갈 일이 없다.
+var STOCK_CODE_RE_ = /<stock_code>\s*(\d{6})\s*<\/stock_code>/g;
+var CORP_BACK_WINDOW_ = 500;
 
 function parseCorpCodeXml_(xml) {
   const map = {};
-  CORP_LIST_RE_.lastIndex = 0;
-  var block;
-  while ((block = CORP_LIST_RE_.exec(xml)) !== null) {
-    const b = block[1];
-    const stock = b.match(/<stock_code>\s*(\d{6})\s*<\/stock_code>/);
-    if (!stock) continue; // 비상장사
-    const corp = b.match(/<corp_code>\s*(\d{8})\s*<\/corp_code>/);
-    if (corp) map[stock[1]] = corp[1];
+  STOCK_CODE_RE_.lastIndex = 0;
+  var m;
+  while ((m = STOCK_CODE_RE_.exec(xml)) !== null) {
+    const start = Math.max(0, m.index - CORP_BACK_WINDOW_);
+    const back = xml.slice(start, m.index);
+    const at = back.lastIndexOf('<corp_code>');
+    if (at === -1) continue;
+    const corp = back.slice(at).match(/^<corp_code>\s*(\d{8})\s*<\/corp_code>/);
+    if (corp) map[m[1]] = corp[1];
   }
   return map;
 }
