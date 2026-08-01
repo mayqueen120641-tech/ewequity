@@ -56,6 +56,9 @@ function doGet(e) {
       case 'finai':
         result = getFinAi((e.parameter && e.parameter.symbol) || '', noCache);
         break;
+      case 'flow':
+        result = getFlow((e.parameter && e.parameter.symbol) || '', noCache);
+        break;
       default:
         result = { error: 'unknown action: ' + action };
     }
@@ -1465,9 +1468,16 @@ var EXPLAIN_SCHEMA_ = {
       enum: ['high', 'medium', 'low'],
       description: '설명의 확신도. 뉴스가 등락을 직접 설명하면 high, 정황만 있으면 medium, ' +
         '관련 뉴스를 못 찾았으면 low.'
+    },
+    // explanation 안에 녹여달라고만 하면 모델이 뉴스 설명에 밀려 수급을 통째로 빠뜨린다.
+    // 별도 필드로 빼야 반드시 나온다.
+    flowNote: {
+      type: 'string',
+      description: '투자자별 수급이 주어졌으면 오늘 누가 사고 팔았는지 한국어 1~2문장. ' +
+        '주어진 수치만 쓸 것. 수급 정보가 없으면 빈 문자열.'
     }
   },
-  required: ['explanation', 'evidence', 'confidence'],
+  required: ['explanation', 'evidence', 'confidence', 'flowNote'],
   additionalProperties: false
 };
 
@@ -1491,9 +1501,12 @@ function getExplain(symbol, name, noCache) {
       error: '"' + nm + '" 관련 뉴스를 찾지 못했어요.' };
   }
 
+  // 수급은 뉴스에 재료가 없는 날에도 "누가 사고 팔았나"를 말해준다. 국내 종목만 나온다.
+  const flow = safe_(function () { return getFlow(sym, noCache); });
+
   // 개별 종목 뉴스만 보면 "원인을 못 찾겠다"로 끝나는 경우가 많다. 실제로는 시장 전체가
   // 빠져서 같이 밀린 날이 흔하기 때문 — 그 판단을 할 수 있게 시장 상황을 같이 넘긴다.
-  const result = callClaudeExplain_(key, nm, quote, news, marketContext_());
+  const result = callClaudeExplain_(key, nm, quote, news, marketContext_(), flow);
   if (!result) return { symbol: sym, name: nm, quote: quote, explanation: null,
     error: '설명을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
 
@@ -1520,10 +1533,12 @@ function getExplain(symbol, name, noCache) {
 
   const data = {
     symbol: sym, name: nm, quote: quote, perf: perf,
+    flow: (flow && !flow.error && flow.days && flow.days.length) ? flow : null,
     valuation: val || null,
     valuationYear: val ? snapshot.year : null,
     explanation: result.explanation,
     confidence: result.confidence,
+    flowNote: result.flowNote || null,
     evidence: evidence,
     at: new Date().toISOString()
   };
@@ -1592,7 +1607,7 @@ function searchStockNews_(name) {
   return out.slice(0, 14);
 }
 
-function callClaudeExplain_(apiKey, name, quote, news, market) {
+function callClaudeExplain_(apiKey, name, quote, news, market, flow) {
   const moved = quote && !quote.error && quote.changePct != null
     ? name + '은(는) 오늘 ' + quote.changePct.toFixed(2) + '% ' +
       (quote.changePct >= 0 ? '올랐어' : '내렸어') + '(현재가 ' + quote.value + ').'
@@ -1606,9 +1621,12 @@ function callClaudeExplain_(apiKey, name, quote, news, market) {
   if (market && market.indices) ctx.push('오늘 시장: ' + market.indices);
   if (market && market.summary) ctx.push('오늘 시장 브리핑: ' + market.summary);
 
+  const flowText = flowContext_(flow);
+
   const prompt =
     moved + '\n\n' +
     (ctx.length ? '[시장 상황]\n' + ctx.join('\n') + '\n\n' : '') +
+    (flowText ? '[투자자별 수급]\n' + flowText + '\n\n' : '') +
     '[' + name + ' 관련 최근 뉴스]\n' + lines + '\n\n' +
     'explanation에는 오늘 이 종목이 왜 그렇게 움직였는지 초보 투자자도 이해할 수 있게 ' +
     '2~3문장으로 설명해줘. 어려운 용어를 쓰면 괄호로 짧게 풀어줘.\n' +
@@ -1619,6 +1637,14 @@ function callClaudeExplain_(apiKey, name, quote, news, market) {
     '⚠️ 다만 뉴스에 없는 사실을 **지어내지는 마**. 구체적인 악재를 아는 것처럼 쓰면 안 돼. ' +
     '근거가 정말 없으면 솔직히 밝히고 evidence는 비우고 confidence는 low로 해. ' +
     '종목명만 겹칠 뿐 주가와 무관한 기사(홍보·행사 등)는 근거로 쓰지 마.\n' +
+    (flowText
+      ? 'flowNote에는 오늘 누가 사고 팔았는지 써줘 ' +
+        '("외국인이 836만주를 순매수한 반면 개인은 1,168만주를 순매도했습니다" 같은 식). ' +
+        '오늘과 누적 방향이 다르면 그 점도 짚어줘.\n' +
+        '⚠️ 수급은 결과지 원인이 아니다. "외국인이 샀으니 오른다"처럼 인과를 뒤집지 마. ' +
+        '개인이 팔고 외국인이 샀다는 사실을 **어느 쪽이 옳다는 식으로 쓰지 마** — ' +
+        '초보자가 "외국인 따라 사면 된다"로 읽으면 안 된다.\n'
+      : 'flowNote는 빈 문자열로 둬.\n') +
     '⚠️ 매수/매도 추천이나 목표가는 절대 쓰지 마. 지금 무슨 일이 있었는지만 설명해.';
 
   let res;
@@ -2829,4 +2855,90 @@ function callClaudeFinAi_(apiKey, fin, medians) {
     console.log('callClaudeFinAi_: JSON 파싱 실패 - ' + err);
     return null;
   }
+}
+
+// ================= 11. 투자자별 수급 (외국인·기관·개인) =================
+// KRX 공식 API는 세션 쿠키를 붙여도 LOGOUT만 돌려준다. 네이버 PC 페이지(frgn.naver)에는
+// 기관·외국인만 있고 **개인이 없다**. 네이버 모바일 API가 셋을 다 주는 유일한 무료 경로다.
+//
+// ⚠️ 개인을 -(외국인+기관)으로 역산하면 안 된다. 기타법인·내국인이 따로 있어서 세 값의
+// 합이 0이 아니다(삼성전자 실측 +296,663주). 반드시 individualPureBuyQuant를 그대로 쓸 것.
+
+var FLOW_URL_ = 'https://m.stock.naver.com/api/stock/';
+var FLOW_CACHE_SEC_ = 1800; // 30분 — 장중에도 30분마다 갱신되면 충분하다
+var FLOW_DAYS_ = 10;        // 이 API가 주는 최대치
+
+// "+8,359,011" / "-11,681,307" / "" → 숫자
+function flowNum_(s) {
+  if (s === null || s === undefined || s === '') return null;
+  const t = String(s).replace(/[,+\s]/g, '');
+  const n = Number(t);
+  return isNaN(n) ? null : n;
+}
+
+// "20260731" → "2026-07-31"
+function flowDate_(s) {
+  const t = String(s || '');
+  return t.length === 8 ? t.slice(0, 4) + '-' + t.slice(4, 6) + '-' + t.slice(6) : t;
+}
+
+function getFlow(symbol, noCache) {
+  const code = krCode_(symbol);
+  if (!code) return { error: '국내 종목만 수급을 볼 수 있어요.' };
+
+  const cacheKey = 'flow_' + code;
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const res = UrlFetchApp.fetch(FLOW_URL_ + code + '/trend', {
+    muteHttpExceptions: true,
+    headers: { 'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'], 'Referer': 'https://m.stock.naver.com/' }
+  });
+  if (res.getResponseCode() >= 400) return { error: '수급 데이터를 불러오지 못했어요.' };
+
+  var raw;
+  try { raw = JSON.parse(res.getContentText()); } catch (err) { raw = null; }
+  // 상장폐지·신규상장 등으로 자료가 없으면 배열이 아닌 게 온다.
+  if (!raw || !raw.length) return { code: code, days: [], totals: null };
+
+  const days = raw.slice(0, FLOW_DAYS_).map(function (r) {
+    return {
+      date: flowDate_(r.bizdate),
+      foreign: flowNum_(r.foreignerPureBuyQuant),
+      inst: flowNum_(r.organPureBuyQuant),
+      indiv: flowNum_(r.individualPureBuyQuant),
+      close: flowNum_(r.closePrice),
+      change: flowNum_(r.compareToPreviousClosePrice),
+      volume: flowNum_(r.accumulatedTradingVolume),
+      holdRatio: r.foreignerHoldRatio || null
+    };
+  }).reverse(); // 응답은 최신순 — 화면은 오래된 날부터 그린다
+
+  const sum = function (k) {
+    return days.reduce(function (a, d) { return a + (d[k] || 0); }, 0);
+  };
+  const data = {
+    code: code,
+    days: days,
+    totals: { foreign: sum('foreign'), inst: sum('inst'), indiv: sum('indiv'), days: days.length },
+    holdRatio: days.length ? days[days.length - 1].holdRatio : null
+  };
+  cachePut_(cacheKey, data, FLOW_CACHE_SEC_);
+  return data;
+}
+
+// AI 설명에 넘길 한 줄 요약. 뉴스에 뚜렷한 재료가 없는 날에도 "누가 샀나"는 말할 수 있다.
+function flowContext_(flow) {
+  if (!flow || flow.error || !flow.days || !flow.days.length) return '';
+  const last = flow.days[flow.days.length - 1];
+  const man = function (v) {
+    if (v === null) return '?';
+    const s = v > 0 ? '+' : '';
+    return s + Math.round(v / 10000).toLocaleString() + '만주';
+  };
+  const t = flow.totals;
+  return '오늘 수급(순매수): 외국인 ' + man(last.foreign) + ', 기관 ' + man(last.inst) +
+    ', 개인 ' + man(last.indiv) + '\n' +
+    '최근 ' + t.days + '거래일 누적: 외국인 ' + man(t.foreign) + ', 기관 ' + man(t.inst) +
+    ', 개인 ' + man(t.indiv);
 }

@@ -445,6 +445,36 @@
     padding:9px 11px;border-left:2px solid var(--panel-border);
   }
   .fin-ai .ai-foot{font-size:10.5px;color:var(--sub);margin-top:10px;}
+  /* 투자자별 수급 — 0선을 가운데 두고 순매수는 위(빨강), 순매도는 아래(파랑). */
+  .flow{margin-top:16px;padding-top:14px;border-top:1px solid var(--panel-border);}
+  .flow h4{margin:0 0 4px;font-size:12px;color:var(--sub);font-weight:500;}
+  .flow .flow-sub{font-size:10.5px;color:var(--sub);margin-bottom:11px;}
+  .flow-row{display:flex;align-items:center;gap:9px;margin-bottom:8px;}
+  .flow-row .fk{flex:0 0 44px;font-size:11px;color:var(--sub);}
+  .flow-row .ftot{flex:0 0 82px;text-align:right;font-size:11px;font-variant-numeric:tabular-nums;}
+  /* 세 줄이 같은 배율을 써야 비교가 된다 — 줄마다 최대치를 새로 잡으면 안 된다. */
+  .flow-bars{flex:1;min-width:0;display:flex;gap:2px;height:40px;position:relative;}
+  .flow-bars::before{
+    content:'';position:absolute;left:0;right:0;top:50%;
+    border-top:1px dashed var(--panel-border);
+  }
+  .flow-bars .fb{flex:1;position:relative;}
+  .flow-bars .fb i{position:absolute;left:0;right:0;border-radius:1.5px;background:var(--up);}
+  .flow-bars .fb i.dn{background:var(--down);}
+  table.flow-tbl{width:100%;border-collapse:collapse;margin-top:12px;font-size:11px;}
+  table.flow-tbl th{
+    text-align:right;padding:5px 4px;color:var(--sub);font-weight:500;
+    border-bottom:1px solid var(--panel-border);
+  }
+  table.flow-tbl th:first-child{text-align:left;}
+  table.flow-tbl td{
+    text-align:right;padding:5px 4px;font-variant-numeric:tabular-nums;
+    border-bottom:1px solid var(--panel-border);
+  }
+  table.flow-tbl td:first-child{text-align:left;color:var(--sub);}
+  table.flow-tbl td.pos{color:var(--up);}
+  table.flow-tbl td.neg{color:var(--down);}
+  .flow-note{font-size:10.5px;color:var(--sub);line-height:1.55;margin-top:9px;}
   .modal-back{
     display:none;position:fixed;inset:0;z-index:50;
     background:rgba(74,59,46,.32);align-items:flex-start;justify-content:center;
@@ -1789,6 +1819,72 @@ document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') closeWhy();
 });
 
+// ---- 투자자별 수급 ----
+const FLOW_KEYS = [['foreign', '외국인'], ['inst', '기관'], ['indiv', '개인']];
+
+// 주식 수는 만주 단위로 줄인다. 800만주를 "8,359,011"로 쓰면 자릿수를 세게 된다.
+function fmtShares(v) {
+  if (v === null || v === undefined) return '–';
+  const sign = v > 0 ? '+' : v < 0 ? '−' : '';
+  const abs = Math.abs(v);
+  if (abs >= 10000) return sign + Math.round(abs / 10000).toLocaleString() + '만';
+  return sign + abs.toLocaleString();
+}
+
+function renderFlow(flow, note) {
+  if (!flow || !flow.days || !flow.days.length) return '';
+  const days = flow.days;
+  const t = flow.totals || {};
+
+  // 세 투자자를 같은 배율로 그려야 "누가 더 많이 샀나"가 보인다.
+  let max = 0;
+  days.forEach(function (d) {
+    FLOW_KEYS.forEach(function (k) { max = Math.max(max, Math.abs(d[k[0]] || 0)); });
+  });
+  if (!max) max = 1;
+
+  const rows = FLOW_KEYS.map(function (k) {
+    const bars = days.map(function (d) {
+      const v = d[k[0]] || 0;
+      // 0선 기준 위/아래로 최대 절반(50%)까지 자란다.
+      const h = Math.max(1, Math.abs(v) / max * 50);
+      const style = v >= 0
+        ? 'bottom:50%;height:' + h + '%'
+        : 'top:50%;height:' + h + '%';
+      return '<span class="fb" title="' + d.date + ' ' + fmtShares(v) + '주">' +
+        '<i class="' + (v < 0 ? 'dn' : '') + '" style="' + style + '"></i></span>';
+    }).join('');
+    const tot = t[k[0]];
+    const cls = tot > 0 ? 'pos' : tot < 0 ? 'neg' : '';
+    return '<div class="flow-row"><span class="fk">' + k[1] + '</span>' +
+      '<span class="flow-bars">' + bars + '</span>' +
+      '<span class="ftot ' + cls + '">' + fmtShares(tot) + '</span></div>';
+  }).join('');
+
+  const tbl = '<table class="flow-tbl"><thead><tr><th>날짜</th><th>종가</th>' +
+    FLOW_KEYS.map(function (k) { return '<th>' + k[1] + '</th>'; }).join('') +
+    '</tr></thead><tbody>' +
+    days.slice().reverse().map(function (d) {
+      return '<tr><td>' + d.date.slice(5) + '</td>' +
+        '<td>' + (d.close === null ? '–' : d.close.toLocaleString()) + '</td>' +
+        FLOW_KEYS.map(function (k) {
+          const v = d[k[0]];
+          const c = v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+          return '<td class="' + c + '">' + fmtShares(v) + '</td>';
+        }).join('') + '</tr>';
+    }).join('') + '</tbody></table>';
+
+  return '<div class="flow"><h4>투자자별 수급</h4>' +
+    '<div class="flow-sub">최근 ' + days.length + '거래일 순매수 주식 수 · 오른쪽은 누적</div>' +
+    rows +
+    (note ? '<div class="ai-sum" style="margin:12px 0 0;">' + esc_(note) + '</div>' : '') +
+    tbl +
+    '<div class="flow-note">순매수 = 산 주식 − 판 주식. 빨강이 순매수, 파랑이 순매도입니다. ' +
+    '세 값의 합이 0이 아닌 건 기타법인 같은 다른 주체가 있기 때문입니다. ' +
+    '수급은 <b>결과이지 원인이 아닙니다</b> — 외국인이 샀다고 주가가 오르는 것은 아닙니다.</div>' +
+    '</div>';
+}
+
 // 밸류에이션 칩 — "왜 움직였나" 모달과 재무 모달이 같은 모양을 쓴다.
 // 값이 없으면(해외 종목·상위 100종목 밖) 통째로 빈 문자열을 돌려준다.
 function valChips(v, year) {
@@ -1846,6 +1942,7 @@ async function loadWhy(symbol, name) {
       '<span class="modal-conf ' + conf + '">' + (CONF_LABEL[conf] || conf) + '</span></div>';
 
     html += valChips(d.valuation, d.valuationYear);
+    html += renderFlow(d.flow, d.flowNote);
 
     if ((d.evidence || []).length) {
       html += '<div class="modal-ev"><h4>근거가 된 뉴스</h4><ul style="margin:0;padding:0;">' +
@@ -1869,6 +1966,17 @@ function mockWhy(name) {
     confidence: 'medium',
     valuation: { per: 33.95, pbr: 3.52, roe: 10.36, opMargin: 13.07, debtRatio: 27.4, loss: false },
     valuationYear: 2025,
+    flow: {
+      days: [
+        { date: '2026-07-27', foreign: 1200000, inst: -300000, indiv: -850000, close: 210000 },
+        { date: '2026-07-28', foreign: -400000, inst: 900000, indiv: -480000, close: 208500 },
+        { date: '2026-07-29', foreign: 2100000, inst: 500000, indiv: -2500000, close: 215000 },
+        { date: '2026-07-30', foreign: 656680, inst: -237928, indiv: -410000, close: 207000 },
+        { date: '2026-07-31', foreign: 8359011, inst: 3618959, indiv: -11681307, close: 262500 }
+      ],
+      totals: { foreign: 11915691, inst: 4480031, indiv: -15921307, days: 5 }
+    },
+    flowNote: '오늘은 외국인이 836만주, 기관이 362만주를 순매수한 반면 개인은 1,168만주를 순매도했습니다. (목업 데이터)',
     evidence: [{ title: '목업 뉴스 제목', link: '#', note: '화면 확인용 예시입니다.' }]
   };
 }
