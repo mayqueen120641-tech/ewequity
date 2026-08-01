@@ -429,6 +429,22 @@
     background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
   }
   .trend-tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;}
+  /* 숫자 해설 — 이 프로젝트의 핵심. 숫자만 띄우면 네이버 증권과 다를 게 없다. */
+  .fin-ai{margin-top:16px;padding-top:14px;border-top:1px solid var(--panel-border);}
+  .fin-ai h4{margin:0 0 9px;font-size:12px;color:var(--sub);font-weight:500;}
+  .fin-ai .ai-sum{
+    font-size:12.5px;line-height:1.65;background:var(--hover);
+    border-radius:9px;padding:11px 12px;margin-bottom:11px;
+  }
+  .fin-ai .ai-m{display:flex;gap:9px;margin-bottom:9px;font-size:12px;line-height:1.6;}
+  .fin-ai .ai-m .mk{
+    flex:0 0 62px;font-weight:600;color:var(--accent);font-size:11px;padding-top:1px;
+  }
+  .fin-ai .ai-watch{
+    font-size:11.5px;line-height:1.6;color:var(--sub);margin-top:11px;
+    padding:9px 11px;border-left:2px solid var(--panel-border);
+  }
+  .fin-ai .ai-foot{font-size:10.5px;color:var(--sub);margin-top:10px;}
   .modal-back{
     display:none;position:fixed;inset:0;z-index:50;
     background:rgba(74,59,46,.32);align-items:flex-start;justify-content:center;
@@ -1773,6 +1789,26 @@ document.addEventListener('keydown', function (e) {
   if (e.key === 'Escape') closeWhy();
 });
 
+// 밸류에이션 칩 — "왜 움직였나" 모달과 재무 모달이 같은 모양을 쓴다.
+// 값이 없으면(해외 종목·상위 100종목 밖) 통째로 빈 문자열을 돌려준다.
+function valChips(v, year) {
+  if (!v) return '';
+  const chip = function (k, val, suffix, noneText) {
+    const has = val !== null && val !== undefined;
+    return '<div class="val-item"><div class="k">' + k + '</div><div class="v' + (has ? '' : ' none') + '">' +
+      (has ? fmtNum(val, 2) + (suffix || '') : (noneText || '–')) + '</div></div>';
+  };
+  return (year ? '<div class="fin-basis" style="margin-top:14px;display:block;margin-left:0;">' +
+      year + '년 사업보고서 기준</div>' : '') +
+    '<div class="val-grid">' +
+    chip('PER', v.per, '배', v.loss ? '적자' : '–') +
+    chip('PBR', v.pbr, '배') +
+    chip('ROE', v.roe, '%') +
+    chip('영업이익률', v.opMargin, '%') +
+    chip('부채비율', v.debtRatio, '%') +
+    '</div>';
+}
+
 async function loadWhy(symbol, name) {
   const bodyEl = document.getElementById('whyBody');
   const quoteEl = document.getElementById('whyQuote');
@@ -1809,6 +1845,8 @@ async function loadWhy(symbol, name) {
     let html = '<div>' + esc_(d.explanation) +
       '<span class="modal-conf ' + conf + '">' + (CONF_LABEL[conf] || conf) + '</span></div>';
 
+    html += valChips(d.valuation, d.valuationYear);
+
     if ((d.evidence || []).length) {
       html += '<div class="modal-ev"><h4>근거가 된 뉴스</h4><ul style="margin:0;padding:0;">' +
         d.evidence.map(function (e) {
@@ -1829,6 +1867,8 @@ function mockWhy(name) {
     perf: { w1: 2.1, m1: -8.4, m3: 12.7 },
     explanation: name + '은(는) 개별 종목의 특별한 악재보다는 시장 전체가 하락한 흐름을 따라간 것으로 보입니다. (목업 데이터)',
     confidence: 'medium',
+    valuation: { per: 33.95, pbr: 3.52, roe: 10.36, opMargin: 13.07, debtRatio: 27.4, loss: false },
+    valuationYear: 2025,
     evidence: [{ title: '목업 뉴스 제목', link: '#', note: '화면 확인용 예시입니다.' }]
   };
 }
@@ -1911,6 +1951,9 @@ let finCache = null;
 let finLoaded = false;
 let finTrendMetric = 'revenue';
 let finTrendData = null;
+// 해설은 숫자보다 늦게 도착한다. 그 사이 다른 종목을 열면 앞 종목 해설이 뒤늦게
+// 덮어쓸 수 있어, 요청마다 번호를 매겨 마지막 것만 그린다.
+let finAiSeq = 0;
 
 // 지표는 '없음'과 '0'이 전혀 다른 뜻이라 구분해서 표시한다.
 // 적자라서 PER이 없는 것과, 데이터를 못 받은 것도 다르다.
@@ -1983,6 +2026,7 @@ function openFin(code, name) {
   document.getElementById('finDetail').innerHTML = '';
   finTrendData = null;
   finTrendMetric = 'revenue';
+  finAiSeq++; // 앞 종목 해설이 뒤늦게 도착해도 무시되게 한다
   finBack.classList.add('show');
   loadFin(code, name);
 }
@@ -2021,6 +2065,53 @@ function renderTrend() {
   }).join('');
 }
 
+const FIN_AI_LABELS = {
+  per: 'PER', pbr: 'PBR', roe: 'ROE', opMargin: '영업이익률', debtRatio: '부채비율'
+};
+
+// 숫자 옆에 뜻을 붙여주는 부분. 화면에 실제로 표시된 지표만 그린다.
+async function loadFinAi(code) {
+  const seq = ++finAiSeq;
+  let d;
+  try {
+    d = isConfigured() ? await apiGet('finai', { symbol: code }) : mockFinAi();
+  } catch (err) {
+    console.error(err);
+    d = { error: '해설을 불러오지 못했어요.' };
+  }
+  if (seq !== finAiSeq) return;
+  const el = document.getElementById('finAi');
+  if (!el) return;
+
+  if (d.error) {
+    el.innerHTML = '<h4>숫자 풀어보기</h4><div class="empty">' + esc_(d.error) + '</div>';
+    return;
+  }
+  const metrics = (d.metrics || [])
+    .filter(function (m) { return FIN_AI_LABELS[m.key] && m.text; })
+    .map(function (m) {
+      return '<div class="ai-m"><span class="mk">' + FIN_AI_LABELS[m.key] + '</span>' +
+        '<span>' + esc_(m.text) + '</span></div>';
+    }).join('');
+
+  el.innerHTML = '<h4>숫자 풀어보기</h4>' +
+    (d.summary ? '<div class="ai-sum">' + esc_(d.summary) + '</div>' : '') +
+    metrics +
+    (d.watch ? '<div class="ai-watch">' + esc_(d.watch) + '</div>' : '') +
+    '<div class="ai-foot">AI가 공시 수치를 풀어 쓴 설명입니다. 투자 판단은 직접 하세요.</div>';
+}
+
+function mockFinAi() {
+  return {
+    summary: '매출과 영업이익이 3년 연속 늘었습니다. 다만 순자산 대비 시가총액(PBR)이 시장 중앙값보다 높은 편입니다.',
+    metrics: [
+      { key: 'per', text: 'PER 33.95배 — 지금 주가가 1년 순이익의 약 34배라는 뜻입니다. 시장 중앙값(12배)보다 높습니다.' },
+      { key: 'roe', text: 'ROE 10.36% — 주주 돈 100원으로 한 해 10원을 벌었다는 뜻입니다.' }
+    ],
+    watch: '이익이 늘어난 것이 본업 때문인지, 일회성 요인 때문인지 실적 추이를 함께 보세요.'
+  };
+}
+
 async function loadFin(code, name) {
   const sub = document.getElementById('finSub');
   const detail = document.getElementById('finDetail');
@@ -2030,19 +2121,7 @@ async function loadFin(code, name) {
 
     sub.textContent = d.year + '년 사업보고서 기준 · 시가총액 ' + fmtCap(d.marketCap);
 
-    const v = d.valuation || {};
-    const chip = function (k, val, suffix, noneText) {
-      const has = val !== null && val !== undefined;
-      return '<div class="val-item"><div class="k">' + k + '</div><div class="v' + (has ? '' : ' none') + '">' +
-        (has ? fmtNum(val, 2) + (suffix || '') : (noneText || '–')) + '</div></div>';
-    };
-    let html = '<div class="val-grid">' +
-      chip('PER', v.per, '배', v.loss ? '적자' : '–') +
-      chip('PBR', v.pbr, '배') +
-      chip('ROE', v.roe, '%') +
-      chip('영업이익률', v.opMargin, '%') +
-      chip('부채비율', v.debtRatio, '%') +
-      '</div>';
+    let html = valChips(d.valuation || {});
 
     finTrendData = d.trend || [];
     if (finTrendData.length) {
@@ -2054,8 +2133,11 @@ async function loadFin(code, name) {
         }).join('') +
         '</div><div id="finTrend"></div></div>';
     }
+    html += '<div class="fin-ai" id="finAi"><h4>숫자 풀어보기</h4>' +
+      '<div class="empty">해설을 만드는 중…</div></div>';
     detail.innerHTML = html;
     renderTrend();
+    loadFinAi(code);
 
     const tabs = document.getElementById('finTrendTabs');
     if (tabs) {

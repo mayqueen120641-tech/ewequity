@@ -53,15 +53,62 @@ function doGet(e) {
       case 'finrank':
         result = getFinRank((e.parameter && e.parameter.sort) || 'per');
         break;
+      case 'finai':
+        result = getFinAi((e.parameter && e.parameter.symbol) || '', noCache);
+        break;
       default:
         result = { error: 'unknown action: ' + action };
     }
   } catch (err) {
-    result = { error: String(err) };
+    // 예외 메시지에 실패한 요청 URL이 통째로 들어오는 경우가 있다. 그 URL에는 API 키가
+    // 쿼리 파라미터로 붙어 있어서, 그대로 내보내면 **누구나 공개 주소로 키를 가져갈 수 있다.**
+    // (실제로 DART 호출이 실패했을 때 crtfc_key가 응답에 그대로 실려 나갔다)
+    console.log('doGet(' + action + ') 예외: ' + err);
+    result = { error: scrubSecrets_(String(err)) };
   }
   return ContentService
-    .createTextOutput(JSON.stringify(result))
+    .createTextOutput(JSON.stringify(scrubValue_(result)))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// 응답에 섞여 나갈 수 있는 비밀값을 가린다. 키 이름이 아니라 **저장된 값 자체**를 찾아
+// 지우기 때문에, 어떤 경로로 새어 나오든(URL 파라미터든 헤더든) 막힌다.
+var SECRET_PROPS_ = [
+  'DART_API_KEY', 'ANTHROPIC_API_KEY', 'FINNHUB_API_KEY', 'FRED_API_KEY',
+  'ECOS_API_KEY', 'NAVER_CLIENT_ID', 'NAVER_CLIENT_SECRET'
+];
+
+// 응답 전체를 훑기 때문에 속성을 문자열마다 읽으면 느리다. 요청당 한 번만 읽는다.
+var secretCache_ = null;
+
+function secretValues_() {
+  if (secretCache_) return secretCache_;
+  const props = PropertiesService.getScriptProperties();
+  secretCache_ = SECRET_PROPS_
+    .map(function (name) { return props.getProperty(name); })
+    // 너무 짧은 값을 지우면 멀쩡한 문장이 깨진다.
+    .filter(function (v) { return v && v.length >= 8; });
+  return secretCache_;
+}
+
+function scrubSecrets_(s) {
+  var out = String(s);
+  secretValues_().forEach(function (v) {
+    if (out.indexOf(v) !== -1) out = out.split(v).join('***');
+  });
+  // 값을 못 읽었더라도 잘 알려진 키 파라미터는 이름 기준으로 한 번 더 막는다.
+  return out.replace(/([?&](?:crtfc_key|api_key|apikey|token|key|serviceKey)=)[^&\s'"]+/gi, '$1***');
+}
+
+function scrubValue_(v) {
+  if (typeof v === 'string') return scrubSecrets_(v);
+  if (Array.isArray(v)) return v.map(scrubValue_);
+  if (v && typeof v === 'object') {
+    const out = {};
+    Object.keys(v).forEach(function (k) { out[k] = scrubValue_(v[k]); });
+    return out;
+  }
+  return v;
 }
 
 /**
@@ -1464,8 +1511,17 @@ function getExplain(symbol, name, noCache) {
   const pf = safe_(function () { return getPerf(sym, false); });
   const perf = ((pf && pf.perf) || []).filter(function (p) { return !p.error; })[0] || null;
 
+  // 오늘 왜 움직였는지를 볼 때 "그래서 이 회사가 지금 어떤 상태인지"가 같이 보이면
+  // 하루 등락을 회사 실적과 이어서 볼 수 있다. 스냅샷에 이미 있는 값이라 추가 호출이 없다.
+  // (상위 100종목 밖이거나 해외 종목이면 그냥 빠진다)
+  const kc = krCode_(sym);
+  const snapshot = kc ? readDartSnapshot_() : null;
+  const val = snapshot ? snapshot.byCode[kc] : null;
+
   const data = {
     symbol: sym, name: nm, quote: quote, perf: perf,
+    valuation: val || null,
+    valuationYear: val ? snapshot.year : null,
     explanation: result.explanation,
     confidence: result.confidence,
     evidence: evidence,
@@ -2559,4 +2615,218 @@ function getFinRank(sort) {
     .sort(function (a, b) { return desc ? b[key] - a[key] : a[key] - b[key]; });
 
   return { rows: sorted, year: snap.year, sort: key, total: rows.length };
+}
+
+// ================= 10. 재무지표 AI 해설 =================
+// 숫자만 띄우는 건 네이버 증권도 한다. 이 프로젝트의 목적은 그 숫자가 **무슨 뜻인지**
+// 초보자 말로 풀어주는 것이다. 그래서 지표마다 한 문장씩 해설을 붙인다.
+//
+// ⚠️ 가장 중요한 원칙: "PER이 낮다 = 싸다 = 사야 한다"로 읽히게 쓰지 않는다.
+// PER이 낮은 회사는 시장이 앞으로 실적이 나빠질 거라고 보는 경우가 많다. 사실(수치)과
+// 그 수치의 의미까지만 말하고, 살지 말지는 사용자가 판단한다.
+
+var FIN_AI_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    summary: {
+      type: 'string',
+      description: '이 회사의 재무 상태를 초보자에게 요약해주는 한국어 2~3문장. ' +
+        '주어진 수치에 근거해서만 쓸 것. 좋다/나쁘다로 단정하지 말고 특징을 짚어줄 것.'
+    },
+    metrics: {
+      type: 'array',
+      description: '지표별 해설. 값이 있는 지표만 담고, 값이 없는(–) 지표는 넣지 말 것.',
+      items: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            enum: ['per', 'pbr', 'roe', 'opMargin', 'debtRatio'],
+            description: '해설 대상 지표'
+          },
+          text: {
+            type: 'string',
+            description: '이 지표가 무슨 뜻인지 + 이 회사 수치가 어느 정도인지 한국어 1~2문장. ' +
+              '용어는 반드시 쉬운 말로 풀어서 설명할 것. 가능하면 시장 중앙값과 비교해줄 것.'
+          }
+        },
+        required: ['key', 'text'],
+        additionalProperties: false
+      }
+    },
+    watch: {
+      type: 'string',
+      description: '이 수치들을 볼 때 같이 따져봐야 할 점 한국어 1~2문장. ' +
+        '⚠️ 매수/매도 추천이나 목표가는 절대 쓰지 말 것. 판단 재료만 알려줄 것.'
+    }
+  },
+  required: ['summary', 'metrics', 'watch'],
+  additionalProperties: false
+};
+
+// 스냅샷 전체의 중앙값. "PER 34배"만 보면 높은지 알 수 없지만 "시장 중앙값 15배"가
+// 같이 있으면 초보자도 감을 잡는다. 이미 저장된 값이라 추가 호출이 0이다.
+// 평균이 아니라 중앙값을 쓰는 이유: PER 300배짜리 하나가 평균을 통째로 망가뜨린다.
+function dartMedians_(snap) {
+  const out = {};
+  ['per', 'pbr', 'roe', 'opMargin', 'debtRatio'].forEach(function (k) {
+    const vals = Object.keys(snap.byCode)
+      .map(function (c) { return snap.byCode[c][k]; })
+      .filter(function (v) { return v !== null && v !== undefined; })
+      .sort(function (a, b) { return a - b; });
+    if (!vals.length) { out[k] = null; return; }
+    const mid = Math.floor(vals.length / 2);
+    const med = vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+    out[k] = Math.round(med * 100) / 100;
+  });
+  out.count = Object.keys(snap.byCode).length;
+  return out;
+}
+
+var FIN_AI_CACHE_SEC_ = 21600; // 6시간
+
+function getFinAi(symbol, noCache) {
+  const code = krCode_(symbol);
+  if (!code) return { error: '국내 종목만 해설할 수 있어요.' };
+
+  const key = getProp_('ANTHROPIC_API_KEY');
+  if (!key) return { error: 'AI 해설은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
+
+  const fin = getFinance(code, noCache);
+  if (!fin || fin.error) return { error: (fin && fin.error) || '재무 데이터를 찾지 못했어요.' };
+
+  const v = fin.valuation || {};
+  // 주가가 움직이면 PER·PBR도 같이 움직인다. 캐시 키에 수치를 넣어두면 값이 의미 있게
+  // 바뀐 순간 자동으로 다시 만들어진다 — 시간만으로 만료시키면 옛날 숫자를 설명하게 된다.
+  const stamp = [fin.year, v.per, v.pbr, v.roe].join('|');
+  const cacheKey = 'finai_' + code + '_' + md5_(stamp);
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const snap = readDartSnapshot_();
+  const medians = snap ? dartMedians_(snap) : null;
+
+  const result = callClaudeFinAi_(key, fin, medians);
+  if (!result) return { error: '해설을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  const data = {
+    code: code, name: fin.name, year: fin.year,
+    summary: result.summary,
+    metrics: (result.metrics || []).filter(function (m) {
+      // 값이 없는 지표를 모델이 굳이 설명했다면 화면과 어긋나므로 버린다.
+      return v[m.key] !== null && v[m.key] !== undefined;
+    }),
+    watch: result.watch,
+    at: new Date().toISOString()
+  };
+  cachePut_(cacheKey, data, FIN_AI_CACHE_SEC_);
+  return data;
+}
+
+var FIN_AI_LABELS_ = {
+  per: ['PER', '배'], pbr: ['PBR', '배'], roe: ['ROE', '%'],
+  opMargin: ['영업이익률', '%'], debtRatio: ['부채비율', '%']
+};
+
+function callClaudeFinAi_(apiKey, fin, medians) {
+  const v = fin.valuation || {};
+  const lines = [];
+  Object.keys(FIN_AI_LABELS_).forEach(function (k) {
+    if (v[k] === null || v[k] === undefined) return;
+    const L = FIN_AI_LABELS_[k];
+    var s = '- ' + L[0] + ': ' + v[k] + L[1];
+    if (medians && medians[k] !== null) s += ' (시장 상위 100종목 중앙값 ' + medians[k] + L[1] + ')';
+    lines.push(s);
+  });
+  if (!lines.length) return null;
+
+  const f = fin.financials || {};
+  const jo = function (n) {
+    return n === null || n === undefined ? null : (Math.round(n / 1e11) / 10) + '조원';
+  };
+  const finLines = [];
+  if (jo(f.revenue)) finLines.push('- 매출액: ' + jo(f.revenue));
+  if (jo(f.operatingProfit)) finLines.push('- 영업이익: ' + jo(f.operatingProfit));
+  if (jo(f.netIncome)) finLines.push('- 당기순이익: ' + jo(f.netIncome));
+  if (jo(f.equity)) finLines.push('- 자본총계: ' + jo(f.equity));
+
+  // 추이를 같이 주면 "PER이 낮다"가 아니라 "이익이 3년째 줄고 있어서 PER이 낮다"까지
+  // 갈 수 있다. 초보자에게 진짜 필요한 건 그 연결이다.
+  const trendLines = [];
+  ((fin.trend && fin.trend.operatingProfit) || []).forEach(function (p) {
+    trendLines.push(p.year + '년 ' + jo(p.value));
+  });
+
+  const prompt =
+    '[' + (fin.name || fin.code) + ' — ' + fin.year + '년 사업보고서(DART) 기준]\n' +
+    lines.join('\n') + '\n\n' +
+    (finLines.length ? '[실적]\n' + finLines.join('\n') + '\n\n' : '') +
+    (trendLines.length ? '[영업이익 추이] ' + trendLines.join(' → ') + '\n\n' : '') +
+    (v.loss ? '※ 이 회사는 당기순손실(적자)이라 PER을 계산할 수 없다.\n\n' : '') +
+    'summary에는 이 회사 재무 상태의 특징을 2~3문장으로 요약해줘.\n' +
+    'metrics에는 위에 값이 있는 지표만 골라 각각 무슨 뜻인지 풀어줘. ' +
+    '예를 들어 "PBR 0.8배 — 회사가 가진 순자산보다 시가총액이 더 싸게 매겨져 있다는 뜻입니다" ' +
+    '처럼 용어를 반드시 쉬운 말로 바꿔줘. 중앙값이 주어진 지표는 시장과 비교해줘.\n' +
+    'watch에는 이 숫자들을 볼 때 함께 따져봐야 할 점을 알려줘.\n\n' +
+    // 정의를 안 주면 모델이 그럴듯하게 틀린 말을 한다. 실제로 부채비율을 "자산 대비"라고
+    // 설명한 적이 있는데, 삼성전자 기준 23%와 29.9%로 값 자체가 달라진다.
+    '[지표 정의 — 이 정의대로만 설명할 것]\n' +
+    '- PER = 시가총액 ÷ 당기순이익 (순이익의 몇 배 가격인가)\n' +
+    '- PBR = 시가총액 ÷ 자본총계 (순자산의 몇 배 가격인가)\n' +
+    '- ROE = 당기순이익 ÷ 자본총계 (주주 돈으로 얼마를 벌었나)\n' +
+    '- 영업이익률 = 영업이익 ÷ 매출액 (판 돈에서 얼마가 남나)\n' +
+    '- 부채비율 = 부채총계 ÷ **자본총계** (자산 대비가 아니다. 100%면 빚과 자기 돈이 같다)\n\n' +
+    '⚠️ 지켜야 할 것:\n' +
+    '- 주어진 수치만 쓰고 없는 숫자를 지어내지 마. 업종 평균이나 경쟁사 수치를 아는 척하지 마.\n' +
+    // 13.07%와 8.07%를 두고 "5배 높다"고 쓴 적이 있다(뺄셈 결과를 배수로 착각).
+    // 초보자용 화면이라 틀린 배수 하나가 인상을 통째로 바꾼다. 아예 계산을 시키지 않는다.
+    '- **배수를 직접 계산하지 마.** "○배 높다/낮다" 같은 표현을 쓰지 말고, ' +
+    '"13.07%로 중앙값 8.07%보다 높습니다"처럼 두 숫자를 그대로 나란히 놓고 높다/낮다만 말해.\n' +
+    // "저평가"는 이미 판단이 끝난 단어다. 초보자는 이걸 "사도 된다"로 읽는다.
+    // 조건부로 쓰지 말라고만 하면 모델이 슬그머니 쓴다 — 단어 자체를 금지한다.
+    '- **"저평가", "고평가", "싸다", "비싸다", "매력적이다"라는 단어를 쓰지 마**. ' +
+    '대신 "중앙값보다 낮습니다/높습니다"처럼 사실만 말해.\n' +
+    '- PER이나 PBR이 낮은 건 시장이 앞으로 실적이 나빠질 거라 보기 때문인 경우가 많아. ' +
+    '낮다는 사실만 좋은 일처럼 쓰면 틀린 인상을 준다. 왜 낮은지를 같이 짚어줘.\n' +
+    '- 매수/매도 추천, 목표가, "지금이 기회" 같은 말은 절대 쓰지 마.\n' +
+    '- 은행·보험처럼 부채비율이 원래 높은 업종이면 그 점을 밝혀줘.';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post',
+      contentType: 'application/json',
+      muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 2000,
+        output_config: { format: { type: 'json_schema', schema: FIN_AI_SCHEMA_ } },
+        system: '너는 초보 투자자에게 기업 재무제표를 쉽게 풀어주는 도우미야. ' +
+          '투자 권유는 절대 하지 않고, 숫자가 무슨 뜻인지만 정확하게 설명한다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) {
+    console.log('callClaudeFinAi_: 연결 실패 - ' + err);
+    return null;
+  }
+
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  if (code >= 400) { console.log('callClaudeFinAi_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+
+  const json = JSON.parse(body);
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') {
+    console.log('callClaudeFinAi_: stop_reason=' + json.stop_reason);
+    return null;
+  }
+  const textBlock = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!textBlock) return null;
+  try {
+    return JSON.parse(textBlock.text);
+  } catch (err) {
+    console.log('callClaudeFinAi_: JSON 파싱 실패 - ' + err);
+    return null;
+  }
 }
