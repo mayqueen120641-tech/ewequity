@@ -47,6 +47,12 @@ function doGet(e) {
       case 'briefing':
         result = getBriefing();
         break;
+      case 'finance':
+        result = getFinance((e.parameter && e.parameter.symbol) || '', noCache);
+        break;
+      case 'finrank':
+        result = getFinRank((e.parameter && e.parameter.sort) || 'per');
+        break;
       default:
         result = { error: 'unknown action: ' + action };
     }
@@ -233,9 +239,13 @@ function setupTriggers() {
   // 이름과 실제 함수를 같이 들고 다닌다(GAS에서 this[name]으로 부르는 건 불안정하다).
   // 브리핑은 유료 API를 쓰므로 주기를 길게 잡았다 — 뉴스가 30분마다 의미 있게 바뀌지도
   // 않고, 30분 주기로 돌리면 하루 48번 호출이라 비용이 확 뛴다.
+  // DART 재무는 분기에 한 번만 바뀌므로 하루 1회면 충분하고, 고유번호 매핑은 상장사가
+  // 새로 생길 때만 바뀌니 주 1회면 된다(20MB짜리 ZIP이라 자주 받을 것도 아니다).
   const jobs = [
     { name: 'refreshEcosCache', fn: refreshEcosCache, minutes: 30 },
-    { name: 'refreshAiBriefing', fn: refreshAiBriefing, hours: 3 }
+    { name: 'refreshAiBriefing', fn: refreshAiBriefing, hours: 3 },
+    { name: 'refreshDartCorpMap', fn: refreshDartCorpMap, weeks: 1 },
+    { name: 'refreshDartSnapshot', fn: refreshDartSnapshot, days: 1 }
   ];
   const names = jobs.map(function (j) { return j.name; });
 
@@ -245,10 +255,16 @@ function setupTriggers() {
   jobs.forEach(function (j) {
     const clock = ScriptApp.newTrigger(j.name).timeBased();
     // everyMinutes는 1/5/10/15/30만 받는다. 그보다 긴 주기는 everyHours를 써야 한다.
-    (j.hours ? clock.everyHours(j.hours) : clock.everyMinutes(j.minutes)).create();
+    // everyWeeks는 요일을 같이 지정하지 않으면 생성이 실패한다.
+    if (j.weeks) clock.everyWeeks(j.weeks).onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(4);
+    else if (j.days) clock.everyDays(j.days).atHour(6);
+    else if (j.hours) clock.everyHours(j.hours);
+    else clock.everyMinutes(j.minutes);
+    clock.create();
   });
   Logger.log('✅ 트리거 등록 완료: ' + jobs.map(function (j) {
-    return j.name + '(' + (j.hours ? j.hours + '시간' : j.minutes + '분') + ')';
+    return j.name + '(' + (j.weeks ? j.weeks + '주' : j.days ? j.days + '일'
+      : j.hours ? j.hours + '시간' : j.minutes + '분') + ')';
   }).join(', '));
 
   // 30분 기다리지 않도록 지금 한 번씩 채워두되, 여기서 나는 오류가 트리거 등록까지
@@ -272,7 +288,7 @@ function checkSetup() {
   const props = PropertiesService.getScriptProperties();
   const lines = ['--- 스크립트 속성 ---'];
   ['ECOS_API_KEY', 'FRED_API_KEY', 'FINNHUB_API_KEY', 'NAVER_CLIENT_ID',
-    'NAVER_CLIENT_SECRET', 'ANTHROPIC_API_KEY', 'BASE_RATE_KR_MANUAL'
+    'NAVER_CLIENT_SECRET', 'ANTHROPIC_API_KEY', 'DART_API_KEY', 'BASE_RATE_KR_MANUAL'
   ].forEach(function (k) {
     const v = props.getProperty(k);
     lines.push('  ' + (v ? '✅' : '❌') + ' ' + k + (k === 'BASE_RATE_KR_MANUAL' && v ? ' = ' + v : ''));
@@ -293,6 +309,14 @@ function checkSetup() {
   } else {
     lines.push('  ❌ AI 브리핑 없음');
   }
+  const corpN = Number(props.getProperty(DART_CORPMAP_ + '_N') || 0);
+  const corpAt = props.getProperty('DART_CORPMAP_AT');
+  lines.push('  ' + (corpN ? '✅' : '❌') + ' DART 고유번호 매핑' +
+    (corpN ? ' (조각 ' + corpN + '개, ' + corpAt + ')' : ' 없음 — refreshDartCorpMap() 실행'));
+  const snap = readDartSnapshot_();
+  lines.push('  ' + (snap ? '✅' : '❌') + ' DART 재무 스냅샷' +
+    (snap ? ' (' + snap.year + '년, ' + Object.keys(snap.byCode).length + '종목, ' +
+      props.getProperty('DART_FIN_AT') + ')' : ' 없음 — refreshDartSnapshot() 실행'));
 
   const out = lines.join('\n');
   Logger.log(out);
@@ -1922,6 +1946,35 @@ function buildAskContext_(news, symbolsCsv) {
       '- 오늘 많이 내린 종목: ' + byUp.slice(-6).reverse().map(fmt).join(', '));
   }
 
+  // "삼성전자 PER 얼마야?", "관심종목 중 ROE 제일 높은 거?" 같은 질문용.
+  // 스냅샷은 트리거가 채워둔 값이라 추가 호출이 없다. 관심종목 + 시총 상위를 함께 넣는다.
+  const snap = readDartSnapshot_();
+  if (snap && items.length) {
+    const wantCodes = {};
+    syms.forEach(function (s) { const c = krCode_(s); if (c) wantCodes[c] = true; });
+    const finLines = items
+      .filter(function (x, i) { return i < 12 || wantCodes[x.code]; })
+      .map(function (x) {
+        const v = snap.byCode[x.code];
+        if (!v) return null;
+        const parts = [];
+        if (v.per !== null) parts.push('PER ' + v.per + '배');
+        else parts.push('PER 없음(적자)');
+        if (v.pbr !== null) parts.push('PBR ' + v.pbr + '배');
+        if (v.roe !== null) parts.push('ROE ' + v.roe + '%');
+        if (v.opMargin !== null) parts.push('영업이익률 ' + v.opMargin + '%');
+        if (v.debtRatio !== null) parts.push('부채비율 ' + v.debtRatio + '%');
+        return '- ' + x.name + ': ' + parts.join(', ');
+      })
+      .filter(function (s) { return s; });
+    if (finLines.length) {
+      ctx.push('[재무지표 — ' + snap.year + '년 사업보고서(DART) 기준, 시가총액은 현재가]\n' +
+        finLines.join('\n') +
+        '\n※ PER·PBR은 회사가 실제로 싼지 비싼지를 확정해주지 않는다. PER이 낮은 데는 ' +
+        '앞으로 실적이 나빠질 것이란 전망이 깔린 경우가 많으니 단정하지 말 것.');
+    }
+  }
+
   // 일정 질문("이번 주 실적발표 뭐 있어?")에 답하려면 캘린더가 필요하다.
   const cal = safe_(function () { return getCalendar(false); });
   if (cal && !cal.error) {
@@ -2117,3 +2170,387 @@ function callClaudeBriefing_(apiKey, rates, news) {
   }
 }
 
+
+// ================= 9. DART 재무지표 (PER / PBR / ROE) =================
+// DART는 PER·PBR을 직접 주지 않는다. 재무제표 원본만 주므로, 이미 네이버에서 긁어오는
+// 시가총액과 나눠서 계산한다. 주식수를 따로 구할 필요가 없어 자기주식·우선주 계산이 빠진다.
+//   PER = 시가총액 / 당기순이익,  PBR = 시가총액 / 자본총계,  ROE = 당기순이익 / 자본총계
+var DART_BASE_ = 'https://opendart.fss.or.kr/api/';
+var DART_CORPMAP_ = 'DART_CORPMAP';   // 종목코드 → DART 고유번호(8자리)
+var DART_SNAPSHOT_ = 'DART_FIN_V1';   // 상위 100종목 지표 스냅샷
+var DART_FETCH_BATCH_ = 20;           // 한 번에 병렬로 때릴 종목 수
+
+// 스크립트 속성은 값 하나에 9KB 제한이 있다. 종목코드 매핑(약 60KB)이나 스냅샷처럼
+// 그보다 큰 값은 잘라서 저장하고, 조각 수를 따로 적어둔다.
+var PROP_CHUNK_ = 8000;
+
+function savePropChunks_(prefix, str) {
+  const props = PropertiesService.getScriptProperties();
+  const n = Math.ceil(str.length / PROP_CHUNK_);
+  const out = {};
+  for (var i = 0; i < n; i++) out[prefix + '_' + i] = str.substr(i * PROP_CHUNK_, PROP_CHUNK_);
+  out[prefix + '_N'] = String(n);
+  props.setProperties(out, false);
+  // 이전에 더 많은 조각이 있었다면 남은 꼬리를 지운다(안 지우면 다음 읽기에서 섞인다).
+  for (var k = n; k < n + 20; k++) props.deleteProperty(prefix + '_' + k);
+  return n;
+}
+
+function readPropChunks_(prefix) {
+  const props = PropertiesService.getScriptProperties();
+  const n = Number(props.getProperty(prefix + '_N') || 0);
+  if (!n) return '';
+  var s = '';
+  for (var i = 0; i < n; i++) s += (props.getProperty(prefix + '_' + i) || '');
+  return s;
+}
+
+// ---- 종목코드 ↔ DART 고유번호 매핑 ----
+// DART는 종목코드가 아니라 자체 8자리 고유번호를 쓴다. 매핑 파일은 ZIP으로 내려오고
+// 압축을 풀면 20MB가 넘어(전체 법인 약 11만 건) 캐시에 못 넣는다. 상장사(종목코드가
+// 있는 것)만 3,900여 건 추려서 속성에 나눠 저장하고, 주 1회 트리거로만 갱신한다.
+function refreshDartCorpMap() {
+  const key = getProp_('DART_API_KEY');
+  if (!key) { Logger.log('⚠️ DART_API_KEY 없음 — 건너뜀'); return; }
+
+  const res = UrlFetchApp.fetch(DART_BASE_ + 'corpCode.xml?crtfc_key=' + key,
+    { muteHttpExceptions: true });
+  if (res.getResponseCode() >= 400) throw new Error('corpCode HTTP ' + res.getResponseCode());
+
+  const blob = res.getBlob().setContentType('application/zip');
+  const xml = Utilities.unzip(blob)[0].getDataAsString('UTF-8');
+  const map = parseCorpCodeXml_(xml);
+
+  const codes = Object.keys(map);
+  if (codes.length < 1000) throw new Error('상장사가 너무 적게 파싱됨: ' + codes.length);
+
+  const packed = codes.map(function (c) { return c + ':' + map[c]; }).join(',');
+  const chunks = savePropChunks_(DART_CORPMAP_, packed);
+  PropertiesService.getScriptProperties()
+    .setProperty('DART_CORPMAP_AT', new Date().toISOString());
+  Logger.log('✅ DART 고유번호 매핑 ' + codes.length + '건 저장(조각 ' + chunks + '개)');
+}
+
+// XML을 XmlService로 파싱하면 11만 건짜리 20MB 문서라 시간이 오래 걸린다. 상장사만
+// 필요하므로 정규식으로 훑되, ⚠️ **반드시 <list> 블록 단위로 끊어서** 봐야 한다.
+// corp_code와 stock_code를 한 정규식으로 이어 잡으면 비상장사(stock_code가 공백)를
+// 만났을 때 그 회사의 corp_code에 **다음 회사의 stock_code**가 붙는다.
+// 실제로 SK하이닉스에 바로 앞 비상장사의 고유번호가 매칭됐다 — 엉뚱한 회사의
+// 재무제표가 표시되는 버그라 화면만 봐서는 못 잡는다.
+var CORP_LIST_RE_ = /<list>([\s\S]{0,800}?)<\/list>/g;
+
+function parseCorpCodeXml_(xml) {
+  const map = {};
+  CORP_LIST_RE_.lastIndex = 0;
+  var block;
+  while ((block = CORP_LIST_RE_.exec(xml)) !== null) {
+    const b = block[1];
+    const stock = b.match(/<stock_code>\s*(\d{6})\s*<\/stock_code>/);
+    if (!stock) continue; // 비상장사
+    const corp = b.match(/<corp_code>\s*(\d{8})\s*<\/corp_code>/);
+    if (corp) map[stock[1]] = corp[1];
+  }
+  return map;
+}
+
+function readDartCorpMap_() {
+  const packed = readPropChunks_(DART_CORPMAP_);
+  const map = {};
+  if (!packed) return map;
+  packed.split(',').forEach(function (pair) {
+    const p = pair.split(':');
+    if (p.length === 2) map[p[0]] = p[1];
+  });
+  return map;
+}
+
+// ---- 주요계정 파싱 ----
+// 계정명은 회사·업종마다 조금씩 다르게 적힌다("당기순이익(손실)", "수익(매출액)" 등).
+// 은행·보험은 매출액 대신 영업수익을 쓴다. 그래서 정확히 일치가 아니라 후보 목록으로 찾는다.
+var DART_ACCOUNTS_ = {
+  revenue: ['매출액', '수익(매출액)', '영업수익'],
+  operatingProfit: ['영업이익', '영업이익(손실)'],
+  netIncome: ['당기순이익', '당기순이익(손실)', '당기순이익(당기순손실)'],
+  assets: ['자산총계'],
+  liabilities: ['부채총계'],
+  equity: ['자본총계']
+};
+
+function dartAmount_(s) {
+  if (s === null || s === undefined) return null;
+  const t = String(s).replace(/,/g, '').trim();
+  if (!t || t === '-') return null;
+  const v = Number(t);
+  return isNaN(v) ? null : v;
+}
+
+// ⚠️ 인자는 응답 객체가 아니라 list 배열이다.
+// 연결재무제표(CFS)를 우선하고, 없으면 별도(OFS)를 쓴다. 지주회사는 별도만 보면
+// 자회사 실적이 통째로 빠져 순이익이 실제의 몇 분의 일로 나온다.
+function parseDartAccounts_(list) {
+  const rows = list || [];
+  const pick = function (names, fsDiv) {
+    for (var i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (fsDiv && r.fs_div !== fsDiv) continue;
+      if (names.indexOf(String(r.account_nm || '').trim()) === -1) continue;
+      const v = dartAmount_(r.thstrm_amount);
+      if (v !== null) return v;
+    }
+    return null;
+  };
+  const out = {};
+  Object.keys(DART_ACCOUNTS_).forEach(function (k) {
+    out[k] = pick(DART_ACCOUNTS_[k], 'CFS');
+    if (out[k] === null) out[k] = pick(DART_ACCOUNTS_[k], 'OFS');
+    if (out[k] === null) out[k] = pick(DART_ACCOUNTS_[k], null);
+  });
+  return out;
+}
+
+// ---- 지표 계산 ----
+// marketCapEok: 네이버에서 긁어온 시가총액(억원). DART 금액은 원 단위라 1억을 곱해 맞춘다.
+// 적자면 PER은 의미가 없으므로 null로 둔다(음수 PER을 "싸다"로 오해하기 쉽다).
+var EOK_ = 100000000;
+
+function calcValuation_(fin, marketCapEok) {
+  const cap = marketCapEok ? marketCapEok * EOK_ : null;
+  const div = function (a, b) {
+    return (a === null || b === null || !b) ? null : a / b;
+  };
+  const round = function (v, d) {
+    return v === null ? null : Math.round(v * Math.pow(10, d)) / Math.pow(10, d);
+  };
+  const netIncome = fin.netIncome;
+  const equity = fin.equity;
+  return {
+    per: netIncome !== null && netIncome > 0 ? round(div(cap, netIncome), 2) : null,
+    pbr: equity !== null && equity > 0 ? round(div(cap, equity), 2) : null,
+    roe: netIncome !== null && equity !== null && equity > 0
+      ? round(div(netIncome, equity) * 100, 2) : null,
+    opMargin: fin.revenue !== null && fin.revenue > 0
+      ? round(div(fin.operatingProfit, fin.revenue) * 100, 2) : null,
+    debtRatio: equity !== null && equity > 0
+      ? round(div(fin.liabilities, equity) * 100, 1) : null,
+    // 적자 여부는 PER이 null인 이유를 화면에서 구분하기 위해 따로 내려준다.
+    loss: netIncome !== null && netIncome <= 0
+  };
+}
+
+// ---- DART 조회 ----
+var DART_REPRT_ = { annual: '11011', q1: '11013', half: '11012', q3: '11014' };
+
+// 사업보고서는 결산 후 90일 안에 낸다(12월 결산이면 이듬해 3월 말). 그래서 4월부터는
+// 작년 것이 있고, 1~3월엔 아직 없어 재작년을 봐야 한다.
+function latestAnnualYear_(now) {
+  const d = now || new Date();
+  return d.getMonth() + 1 >= 4 ? d.getFullYear() - 1 : d.getFullYear() - 2;
+}
+
+function dartAcntUrl_(key, corpCode, year, reprt) {
+  return DART_BASE_ + 'fnlttSinglAcnt.json?crtfc_key=' + key +
+    '&corp_code=' + corpCode + '&bsns_year=' + year + '&reprt_code=' + reprt;
+}
+
+// 종목이 많아 한꺼번에 던지면 DART가 막을 수 있어 20개씩 끊어서 병렬로 받는다.
+// status '013'은 "조회된 데이터 없음"이라 오류가 아니다 — 그 해 보고서를 아직 안 낸 것뿐.
+function fetchDartFinancials_(pairs, year, reprt) {
+  const key = getProp_('DART_API_KEY');
+  const out = {};
+  if (!key) return out;
+
+  for (var s = 0; s < pairs.length; s += DART_FETCH_BATCH_) {
+    const batch = pairs.slice(s, s + DART_FETCH_BATCH_);
+    const jobs = batch.map(function (p) {
+      return { url: dartAcntUrl_(key, p.corpCode, year, reprt) };
+    });
+    fetchJobsSafe_(jobs).forEach(function (res, i) {
+      try {
+        if (!res || res.getResponseCode() >= 400) return;
+        const json = JSON.parse(res.getContentText());
+        if (json.status !== '000') return;
+        out[batch[i].code] = parseDartAccounts_(json.list);
+      } catch (err) {
+        // 이 종목만 건너뛴다 — 한 종목 때문에 100종목 갱신을 통째로 날릴 이유가 없다.
+      }
+    });
+  }
+  return out;
+}
+
+// ---- 상위 100종목 스냅샷 (트리거) ----
+// 재무는 분기에 한 번만 바뀌므로 요청 경로에서 부를 이유가 없다(ECOS·브리핑과 같은 이유).
+// 하루 1회 트리거로 채워두고, 화면은 저장된 값만 읽는다.
+function refreshDartSnapshot() {
+  if (!getProp_('DART_API_KEY')) { Logger.log('⚠️ DART_API_KEY 없음 — 건너뜀'); return; }
+  const map = readDartCorpMap_();
+  if (!Object.keys(map).length) {
+    Logger.log('⚠️ 고유번호 매핑이 비어 있음 — refreshDartCorpMap 먼저 실행');
+    return;
+  }
+
+  const mk = getMarket(false);
+  const items = (mk && mk.items) || [];
+  const pairs = items
+    .filter(function (x) { return map[x.code]; })
+    .map(function (x) { return { code: x.code, corpCode: map[x.code] }; });
+
+  const year = latestAnnualYear_();
+  const fins = fetchDartFinancials_(pairs, year, DART_REPRT_.annual);
+
+  const capByCode = {};
+  items.forEach(function (x) { capByCode[x.code] = x.marketCap; });
+
+  const rows = [];
+  Object.keys(fins).forEach(function (code) {
+    const v = calcValuation_(fins[code], capByCode[code]);
+    if (v.per === null && v.pbr === null && v.roe === null) return;
+    rows.push([code, v.per, v.pbr, v.roe, v.opMargin, v.debtRatio, v.loss ? 1 : 0]);
+  });
+
+  savePropChunks_(DART_SNAPSHOT_, JSON.stringify({ year: year, rows: rows }));
+  PropertiesService.getScriptProperties()
+    .setProperty('DART_FIN_AT', new Date().toISOString());
+  Logger.log('✅ DART 재무 스냅샷 ' + rows.length + '/' + pairs.length + '종목 (' + year + '년 연간)');
+}
+
+var DART_FIELDS_ = ['code', 'per', 'pbr', 'roe', 'opMargin', 'debtRatio', 'loss'];
+
+function readDartSnapshot_() {
+  try {
+    const raw = readPropChunks_(DART_SNAPSHOT_);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const byCode = {};
+    (parsed.rows || []).forEach(function (r) {
+      const o = {};
+      DART_FIELDS_.forEach(function (f, i) { o[f] = r[i]; });
+      o.loss = !!o.loss;
+      byCode[o.code] = o;
+    });
+    return { year: parsed.year, byCode: byCode };
+  } catch (err) {
+    return null;
+  }
+}
+
+// ---- 실적 추이 ----
+// 사업보고서 응답에는 당기(thstrm)·전기(frmtrm)·전전기(bfefrmtrm)가 같이 들어 있다.
+// 즉 호출 한 번으로 3개년 추이가 나온다 — 연도별로 따로 부를 필요가 없다.
+var DART_TREND_ACCOUNTS_ = [
+  ['revenue', DART_ACCOUNTS_.revenue, '매출액'],
+  ['operatingProfit', DART_ACCOUNTS_.operatingProfit, '영업이익'],
+  ['netIncome', DART_ACCOUNTS_.netIncome, '당기순이익']
+];
+
+// "2025.01.01 ~ 2025.12.31" 또는 "제 57 기" 형태에서 연도만 뽑는다.
+function dartPeriodYear_(dt, fallbackYear) {
+  const m = String(dt || '').match(/(20\d{2})/);
+  return m ? Number(m[1]) : fallbackYear;
+}
+
+function parseDartTrend_(list, year) {
+  const rows = list || [];
+  const find = function (names, fsDiv) {
+    for (var i = 0; i < rows.length; i++) {
+      if (fsDiv && rows[i].fs_div !== fsDiv) continue;
+      if (names.indexOf(String(rows[i].account_nm || '').trim()) !== -1) return rows[i];
+    }
+    return null;
+  };
+  const byYear = {};
+  const add = function (y, field, val) {
+    if (y === null || val === null) return;
+    if (!byYear[y]) byYear[y] = { year: y };
+    byYear[y][field] = val;
+  };
+
+  DART_TREND_ACCOUNTS_.forEach(function (spec) {
+    const row = find(spec[1], 'CFS') || find(spec[1], 'OFS') || find(spec[1], null);
+    if (!row) return;
+    add(dartPeriodYear_(row.thstrm_dt, year), spec[0], dartAmount_(row.thstrm_amount));
+    add(dartPeriodYear_(row.frmtrm_dt, year - 1), spec[0], dartAmount_(row.frmtrm_amount));
+    add(dartPeriodYear_(row.bfefrmtrm_dt, year - 2), spec[0], dartAmount_(row.bfefrmtrm_amount));
+  });
+
+  return Object.keys(byYear)
+    .map(function (y) { return byYear[y]; })
+    .sort(function (a, b) { return a.year - b.year; });
+}
+
+// ---- 단일 종목 재무 (요청 시 조회) ----
+// 종목코드는 '005930' 또는 '005930.KS' 둘 다 받는다(워치리스트는 .KS를 붙여 저장한다).
+function krCode_(symbol) {
+  const m = String(symbol || '').match(/(\d{6})/);
+  return m ? m[1] : null;
+}
+
+function getFinance(symbol, noCache) {
+  const code = krCode_(symbol);
+  if (!code) return { error: '국내 종목만 재무 지표를 볼 수 있어요. (해외 종목은 DART에 공시되지 않습니다)' };
+
+  const cacheKey = 'fin_' + code;
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  if (!getProp_('DART_API_KEY')) return { error: 'DART_API_KEY가 설정되지 않았어요.' };
+  const map = readDartCorpMap_();
+  const corpCode = map[code];
+  if (!corpCode) return { error: '이 종목의 DART 고유번호를 찾지 못했어요.' };
+
+  const key = getProp_('DART_API_KEY');
+  const year = latestAnnualYear_();
+  const res = UrlFetchApp.fetch(dartAcntUrl_(key, corpCode, year, DART_REPRT_.annual),
+    { muteHttpExceptions: true });
+  const json = JSON.parse(res.getContentText());
+  if (json.status !== '000') {
+    return { error: json.message || (year + '년 사업보고서를 찾지 못했어요.'), code: code };
+  }
+
+  const fin = parseDartAccounts_(json.list);
+  // 시가총액은 이미 순위표에서 긁어온 값을 그대로 쓴다(추가 호출 없음).
+  const mk = safe_(function () { return getMarket(false); });
+  const item = (((mk && mk.items) || []).filter(function (x) { return x.code === code; }))[0];
+
+  const data = {
+    code: code,
+    name: item ? item.name : null,
+    year: year,
+    marketCap: item ? item.marketCap : null,
+    valuation: calcValuation_(fin, item ? item.marketCap : null),
+    financials: fin,
+    trend: parseDartTrend_(json.list, year)
+  };
+  cachePut_(cacheKey, data, 43200); // 12시간 — 재무는 분기에 한 번만 바뀐다
+  return data;
+}
+
+// ---- 재무 스크리너 ----
+// 상위 100종목을 PER 낮은 순 / PBR 낮은 순 / ROE 높은 순으로 정렬한다.
+// ⚠️ "저평가"라고 단정하지 않는다 — PER이 낮은 데는 실적이 나쁠 것이란 전망이 깔린
+// 경우가 많다. 화면에도 사실(수치)만 쓰고 판단은 사용자에게 남긴다.
+function getFinRank(sort) {
+  const snap = readDartSnapshot_();
+  if (!snap) return { rows: [], error: '재무 데이터가 아직 준비되지 않았어요.' };
+
+  const mk = safe_(function () { return getMarket(false); });
+  const items = (mk && mk.items) || [];
+  const rows = [];
+  items.forEach(function (x) {
+    const v = snap.byCode[x.code];
+    if (!v) return;
+    rows.push({
+      code: x.code, name: x.name, price: x.price, changePct: x.changePct,
+      marketCap: x.marketCap,
+      per: v.per, pbr: v.pbr, roe: v.roe, opMargin: v.opMargin, debtRatio: v.debtRatio
+    });
+  });
+
+  const key = sort === 'pbr' ? 'pbr' : sort === 'roe' ? 'roe' : 'per';
+  const desc = key === 'roe';
+  const sorted = rows
+    .filter(function (r) { return r[key] !== null && r[key] !== undefined; })
+    .sort(function (a, b) { return desc ? b[key] - a[key] : a[key] - b[key]; });
+
+  return { rows: sorted, year: snap.year, sort: key, total: rows.length };
+}
