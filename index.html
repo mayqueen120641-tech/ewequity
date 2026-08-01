@@ -509,6 +509,27 @@
   .modal-ev li:last-child{border-bottom:none;}
   .modal-ev .note{color:var(--sub);font-size:11.5px;margin-top:3px;line-height:1.5;}
   .modal-foot{margin-top:14px;font-size:11px;color:var(--sub);line-height:1.6;}
+  /* 로그인 영역 */
+  .auth-box{margin:0 12px 10px;padding:11px 12px;background:var(--hover);border-radius:10px;}
+  .auth-hint{font-size:10.5px;color:var(--sub);line-height:1.5;margin-top:8px;}
+  .auth-user{display:flex;align-items:center;gap:9px;}
+  .auth-user img{width:28px;height:28px;border-radius:50%;flex:0 0 28px;}
+  .auth-meta{min-width:0;}
+  .auth-meta b{display:block;font-size:12px;}
+  .auth-meta span{
+    display:block;font-size:10px;color:var(--sub);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .auth-acts{display:flex;gap:6px;margin-top:9px;}
+  .auth-acts button{
+    flex:1;padding:5px 0;font-size:10.5px;border-radius:6px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
+  }
+  .auth-acts button:hover{color:var(--text);}
+  .auth-warn{
+    margin:0 12px 10px;padding:10px 12px;border-radius:10px;font-size:10.5px;line-height:1.55;
+    background:var(--hover);color:var(--sub);border-left:2px solid var(--accent);
+  }
   /* 클릭해서 설명을 볼 수 있는 요소임을 알려주는 표시 */
   .why-hint{font-size:11px;color:var(--accent);margin-top:6px;}
   .watch-card{cursor:pointer;}
@@ -548,7 +569,11 @@
 <!-- ⚠️ 여기에 배포한 Google Apps Script 웹 앱 URL을 넣으세요 -->
 <script>
   const GAS_URL = "https://script.google.com/macros/s/AKfycbzmBT3V0ZYu5gGmNpQSU0L963JylyfhqHgqlz0QHfJzgwr5bkqJGhnX1mRIg3ReBGgb/exec";
+  // 구글 로그인용 클라이언트 ID. 비밀값이 아니라 공개돼도 되는 값이다(구글이 등록된
+  // 도메인에서만 동작하게 막아준다). 발급 방법은 README 참고.
+  const GOOGLE_CLIENT_ID = "";
 </script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <div class="app">
 
@@ -575,6 +600,27 @@
       <a href="#/report"><span class="nav-icon">▣</span><span class="nav-label">리포트</span></a>
       <a href="#/settings"><span class="nav-icon">⚙</span><span class="nav-label">설정</span></a>
     </nav>
+
+    <!-- 로그인 영역. 구글이 신원을 확인해주므로 비밀번호는 받지도, 저장하지도 않는다. -->
+    <div class="auth-box" id="authBox">
+      <div id="authOut">
+        <div id="gsiBtn"></div>
+        <div class="auth-hint" id="authHint">로그인하면 관심 종목이 기기 간에 같이 보여요.</div>
+      </div>
+      <div id="authIn" hidden>
+        <div class="auth-user">
+          <img id="authPic" alt="" hidden>
+          <div class="auth-meta">
+            <b id="authNick">-</b>
+            <span id="authMail"></span>
+          </div>
+        </div>
+        <div class="auth-acts">
+          <button type="button" id="nickBtn">닉네임</button>
+          <button type="button" id="logoutBtn">로그아웃</button>
+        </div>
+      </div>
+    </div>
 
     <div class="side-note">
       <b>Smarter Investing, Together</b>
@@ -2295,6 +2341,189 @@ document.querySelectorAll('#finTabs button').forEach(function (btn) {
 // 목록은 브라우저에만 저장한다. 서버에 두려면 공개 URL(ANYONE_ANONYMOUS)에 쓰기
 // 엔드포인트를 열어야 하는데, 그러면 URL을 아는 누구나 남의 목록을 바꿀 수 있다.
 // 대신 기기 간 동기화는 안 된다 — 브라우저마다 별도 목록이다.
+// ---------- 로그인 ----------
+// 비밀번호는 받지도 저장하지도 않는다. 구글이 발급한 ID 토큰을 백엔드가 검증하고,
+// 사용자 구분은 토큰 안의 sub로만 한다(클라이언트가 보낸 값은 신뢰하지 않는다).
+//
+// 토큰은 sessionStorage에만 둔다. localStorage에 두면 탭을 닫아도 남아서,
+// 공용 PC에서 다음 사람이 그대로 로그인된 상태가 된다.
+const TOKEN_KEY = 'ewequity.idToken';
+let idToken = null;
+let me = null;
+
+try { idToken = sessionStorage.getItem(TOKEN_KEY); } catch (err) { idToken = null; }
+
+function authConfigured() {
+  return typeof GOOGLE_CLIENT_ID === 'string' && GOOGLE_CLIENT_ID.length > 10;
+}
+
+// 로그인이 필요한 요청은 POST로 보낸다. GET 쿼리에 토큰을 실으면 접속 로그에 남는다.
+// Content-Type을 text/plain으로 두는 건 브라우저 사전 요청(preflight)을 피하기 위해서다 —
+// GAS 웹앱은 preflight에 응답하지 못해서 application/json으로 보내면 통째로 막힌다.
+async function apiPost(action, body) {
+  if (!isConfigured()) throw new Error('GAS_URL not set');
+  const res = await fetch(GAS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(Object.assign({ action: action, idToken: idToken }, body || {}))
+  });
+  if (!res.ok) throw new Error('API error ' + res.status);
+  const json = await res.json();
+  // 토큰이 만료됐으면(구글 ID 토큰은 1시간) 조용히 로그아웃시켜 다시 누르게 한다.
+  if (json && json.authRequired) { doLogout(true); throw new Error('auth required'); }
+  return json;
+}
+
+function renderAuth() {
+  const out = document.getElementById('authOut');
+  const inn = document.getElementById('authIn');
+  if (!out || !inn) return;
+  const on = !!me;
+  out.hidden = on;
+  inn.hidden = !on;
+  if (!on) return;
+  document.getElementById('authNick').textContent = me.nickname || '이름없는양';
+  document.getElementById('authMail').textContent = me.email || '';
+  const pic = document.getElementById('authPic');
+  if (me.picture) { pic.src = me.picture; pic.hidden = false; } else { pic.hidden = true; }
+}
+
+// 구글 로그인 버튼이 토큰을 들고 돌아오는 지점
+async function onGoogleCredential(resp) {
+  if (!resp || !resp.credential) return;
+  idToken = resp.credential;
+  try { sessionStorage.setItem(TOKEN_KEY, idToken); } catch (err) { /* 시크릿 모드 */ }
+  try {
+    me = await apiPost('me');
+    if (me.error) throw new Error(me.error);
+    renderAuth();
+    await mergeAndLoadUserData(me.isNew);
+  } catch (err) {
+    console.error(err);
+    doLogout(true);
+    alert('로그인에 실패했어요. 잠시 후 다시 시도해주세요.');
+  }
+}
+
+// 처음 로그인하면 이 기기에 있던 관심종목을 계정으로 옮겨준다. 안 그러면 로그인하자마자
+// 목록이 빈 것처럼 보여서 "데이터가 날아갔다"고 느낀다.
+async function mergeAndLoadUserData(isNew) {
+  let server;
+  try { server = await apiPost('userdata'); } catch (err) { return; }
+  if (!server || server.error) return;
+
+  const local = watchlist || [];
+  const remote = server.watchlist || [];
+
+  if (remote.length === 0 && local.length > 0) {
+    // 계정 쪽이 비어 있으면 이 기기 목록을 그대로 올린다.
+    await pushUserData(true);
+  } else if (local.length > 0 && !sameWatchlist(local, remote)) {
+    const keep = confirm(
+      '이 기기의 관심종목 ' + local.length + '개와 계정에 저장된 ' + remote.length + '개가 다릅니다.\n\n' +
+      '확인 = 두 목록을 합칩니다\n취소 = 계정에 저장된 목록을 씁니다'
+    );
+    watchlist = keep ? mergeWatchlists(remote, local) : remote.slice();
+    saveWatchlist();
+  } else {
+    watchlist = remote.slice();
+    try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist)); } catch (err) { /* noop */ }
+  }
+  if (typeof loadWatchQuotes === 'function') loadWatchQuotes();
+}
+
+function sameWatchlist(a, b) {
+  if (a.length !== b.length) return false;
+  const s = b.map(function (w) { return w.symbol; }).sort().join(',');
+  return a.map(function (w) { return w.symbol; }).sort().join(',') === s;
+}
+
+function mergeWatchlists(base, extra) {
+  const out = base.slice();
+  const seen = {};
+  out.forEach(function (w) { seen[w.symbol] = true; });
+  extra.forEach(function (w) {
+    if (!seen[w.symbol] && out.length < WATCHLIST_MAX) { out.push(w); seen[w.symbol] = true; }
+  });
+  return out;
+}
+
+// 저장은 연달아 일어난다(종목 추가/삭제). 매번 서버를 때리지 않도록 잠깐 모아서 보낸다.
+let pushTimer = null;
+
+function pushUserData(now) {
+  if (!me || !idToken) return Promise.resolve();
+  if (pushTimer) clearTimeout(pushTimer);
+  const send = function () {
+    return apiPost('saveuserdata', { data: { watchlist: watchlist, portfolio: [] } })
+      .catch(function (err) { console.error('계정에 저장하지 못했습니다', err); });
+  };
+  if (now) return send();
+  pushTimer = setTimeout(send, 800);
+  return Promise.resolve();
+}
+
+function doLogout(silent) {
+  idToken = null;
+  me = null;
+  try { sessionStorage.removeItem(TOKEN_KEY); } catch (err) { /* noop */ }
+  if (window.google && google.accounts && google.accounts.id) {
+    google.accounts.id.disableAutoSelect();
+  }
+  renderAuth();
+  if (!silent) location.reload();
+}
+
+function initAuth() {
+  const box = document.getElementById('authBox');
+  if (!authConfigured()) {
+    // 아직 설정 전이면 로그인 버튼 자리에 안내를 띄운다.
+    if (box) box.innerHTML = '<div class="auth-hint">구글 로그인을 쓰려면 ' +
+      '<b>GOOGLE_CLIENT_ID</b>를 넣어주세요. (README 참고)</div>';
+    return;
+  }
+  if (!window.google || !google.accounts || !google.accounts.id) {
+    // GSI 스크립트가 async라 아직 안 왔을 수 있다.
+    setTimeout(initAuth, 300);
+    return;
+  }
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: onGoogleCredential,
+    auto_select: false,
+    cancel_on_tap_outside: true
+  });
+  google.accounts.id.renderButton(document.getElementById('gsiBtn'),
+    { theme: 'outline', size: 'medium', text: 'signin_with', locale: 'ko', width: 200 });
+
+  const nb = document.getElementById('nickBtn');
+  const lb = document.getElementById('logoutBtn');
+  if (nb) nb.addEventListener('click', changeNickname);
+  if (lb) lb.addEventListener('click', function () { doLogout(false); });
+
+  // 새로고침해도 이번 탭에서는 로그인이 유지되게 한다.
+  if (idToken) {
+    apiPost('me').then(function (r) {
+      if (r && !r.error) { me = r; renderAuth(); return mergeAndLoadUserData(false); }
+    }).catch(function () { /* 만료된 토큰 — apiPost가 이미 정리했다 */ });
+  }
+}
+
+async function changeNickname() {
+  const cur = (me && me.nickname) || '';
+  const next = prompt('닉네임을 입력하세요 (최대 20자)', cur);
+  if (next === null) return;
+  try {
+    const r = await apiPost('nickname', { nickname: next });
+    if (r.error) { alert(r.error); return; }
+    me.nickname = r.nickname;
+    renderAuth();
+  } catch (err) {
+    console.error(err);
+    alert('닉네임을 바꾸지 못했어요.');
+  }
+}
+
 const WATCHLIST_KEY = 'ewequity.watchlist';
 const WATCHLIST_MAX = 20;
 let watchlist = loadWatchlist();
@@ -2318,6 +2547,9 @@ function saveWatchlist() {
     // 시크릿 모드 등에서 저장이 막힐 수 있다. 이번 세션 동안은 그대로 쓴다.
     console.error('워치리스트를 저장하지 못했습니다(이번 세션에만 유지됩니다)', err);
   }
+  // 로그인 상태면 서버에도 올려 다른 기기에서 이어 볼 수 있게 한다.
+  // 로컬 저장은 그대로 둔다 — 서버가 죽어도 화면이 비지 않는다.
+  pushUserData();
 }
 
 function addToWatchlist(symbol, name) {
@@ -2618,6 +2850,7 @@ async function manualRefresh() {
 document.getElementById('refreshBtn').addEventListener('click', manualRefresh);
 
 loadAll();
+initAuth();
 setInterval(loadRates, 15 * 60 * 1000);   // 15분마다 지표 갱신
 setInterval(loadWatchQuotes, 15 * 60 * 1000); // 관심종목도 같은 주기로
 setInterval(loadMarket, 15 * 60 * 1000);      // 종목 순위도 같은 주기로

@@ -2942,3 +2942,242 @@ function flowContext_(flow) {
     '최근 ' + t.days + '거래일 누적: 외국인 ' + man(t.foreign) + ', 기관 ' + man(t.inst) +
     ', 개인 ' + man(t.indiv);
 }
+
+// ================= 12. 로그인 (구글) =================
+// 비밀번호를 직접 받지 않는다. 구글이 신원을 확인해주고, 우리는 그 결과(ID 토큰)만 검증한다.
+// 저장하는 개인정보는 구글이 주는 sub(고유 ID)·이메일·이름뿐이고, 전화번호는 받지 않는다.
+//
+// 🔴 이 웹앱은 ANYONE_ANONYMOUS다. 즉 URL만 알면 누구나 호출할 수 있다.
+//    그래서 **클라이언트가 보낸 사용자 식별자를 절대 믿으면 안 된다.**
+//    userId를 파라미터로 받으면 남의 데이터를 그대로 읽어갈 수 있다.
+//    사용자 구분은 오직 **검증된 토큰 안의 sub**로만 한다.
+
+var GSI_TOKENINFO_ = 'https://oauth2.googleapis.com/tokeninfo?id_token=';
+var AUTH_CACHE_SEC_ = 300;    // 토큰 검증 결과 캐시(5분). 토큰 만료보다 짧게 잡는다.
+var USER_SHEET_ = 'users';
+var DATA_SHEET_ = 'userdata';
+
+// 구글이 서명한 ID 토큰인지 확인하고 사용자 정보를 돌려준다.
+// tokeninfo 엔드포인트가 서명·만료를 검사해준다. 다만 **그것만으론 부족하다** —
+// 다른 앱용으로 발급된 토큰도 서명은 유효하기 때문에 aud(발급 대상)를 반드시 대조해야 한다.
+// 이걸 빼먹으면 아무 구글 앱 토큰으로나 남의 계정에 들어올 수 있다.
+function verifyIdToken_(idToken) {
+  const t = String(idToken || '').trim();
+  if (!t || t.length > 4000) return null;
+
+  // getProp_는 값이 없으면 예외를 던진다. 여기서는 "설정 안 됨"도 그냥 로그인 실패로
+  // 다뤄야 한다 — 예외가 나가면 응답에 내부 사정이 실린다.
+  const clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID');
+  if (!clientId) { console.log('verifyIdToken_: GOOGLE_CLIENT_ID 미설정'); return null; }
+
+  const cacheKey = 'auth_' + md5_(t);
+  const cached = cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  var res;
+  try {
+    res = UrlFetchApp.fetch(GSI_TOKENINFO_ + encodeURIComponent(t), { muteHttpExceptions: true });
+  } catch (err) {
+    console.log('verifyIdToken_: 연결 실패');
+    return null;
+  }
+  if (res.getResponseCode() !== 200) return null;
+
+  var info;
+  try { info = JSON.parse(res.getContentText()); } catch (err) { return null; }
+
+  if (info.aud !== clientId) { console.log('verifyIdToken_: aud 불일치'); return null; }
+  if (info.iss !== 'accounts.google.com' && info.iss !== 'https://accounts.google.com') return null;
+  // tokeninfo가 만료를 걸러주지만, 시계 오차나 응답 캐싱을 감안해 한 번 더 본다.
+  if (!info.exp || Number(info.exp) * 1000 <= Date.now()) return null;
+  if (!info.sub) return null;
+  // 이메일 미인증 계정은 이메일을 신뢰할 수 없다. 식별은 sub로 하므로 로그인은 되지만
+  // 이메일은 비워둔다.
+  const verified = String(info.email_verified) === 'true';
+
+  const user = {
+    sub: info.sub,
+    email: verified ? (info.email || '') : '',
+    name: info.name || '',
+    picture: info.picture || ''
+  };
+  // 캐시는 토큰 남은 수명과 5분 중 짧은 쪽으로.
+  const ttl = Math.min(AUTH_CACHE_SEC_, Math.floor((Number(info.exp) * 1000 - Date.now()) / 1000));
+  if (ttl > 0) cachePut_(cacheKey, user, ttl);
+  return user;
+}
+
+// 사용자 데이터는 스프레드시트에 둔다. 스크립트 속성은 값당 9KB라 사람이 늘면 금방 찬다.
+function userSheet_(name, headers) {
+  const id = getProp_('USER_SHEET_ID');
+  if (!id) throw new Error('USER_SHEET_ID가 설정되지 않았습니다.');
+  const ss = SpreadsheetApp.openById(id);
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.appendRow(headers);
+  }
+  return sh;
+}
+
+// sub → 시트 행 번호. 매번 전체를 훑지 않도록 캐시한다.
+function findUserRow_(sh, sub) {
+  const values = sh.getRange(1, 1, Math.max(sh.getLastRow(), 1), 1).getValues();
+  for (var i = 1; i < values.length; i++) {
+    if (String(values[i][0]) === sub) return i + 1;
+  }
+  return 0;
+}
+
+var NICK_MAX_ = 20;
+
+function sanitizeNick_(s) {
+  return String(s || '').replace(/[\r\n\t]/g, ' ').trim().slice(0, NICK_MAX_);
+}
+
+// 로그인. 없으면 만들고 있으면 마지막 접속 시각만 갱신한다.
+function getMe(idToken) {
+  const user = verifyIdToken_(idToken);
+  if (!user) return { error: '로그인이 필요합니다.', authRequired: true };
+
+  const sh = userSheet_(USER_SHEET_, ['sub', 'email', 'nickname', 'joinedAt', 'lastSeenAt']);
+  const row = findUserRow_(sh, user.sub);
+  const now = new Date().toISOString();
+
+  if (!row) {
+    const nick = sanitizeNick_(user.name) || '이름없는양';
+    sh.appendRow([user.sub, user.email, nick, now, now]);
+    return { sub: user.sub, email: user.email, nickname: nick, picture: user.picture, isNew: true };
+  }
+  sh.getRange(row, 5).setValue(now);
+  return {
+    sub: user.sub,
+    email: user.email,
+    nickname: sh.getRange(row, 3).getValue() || sanitizeNick_(user.name),
+    picture: user.picture,
+    isNew: false
+  };
+}
+
+function setNickname(idToken, nickname) {
+  const user = verifyIdToken_(idToken);
+  if (!user) return { error: '로그인이 필요합니다.', authRequired: true };
+  const nick = sanitizeNick_(nickname);
+  if (!nick) return { error: '닉네임을 입력해주세요.' };
+
+  const sh = userSheet_(USER_SHEET_, ['sub', 'email', 'nickname', 'joinedAt', 'lastSeenAt']);
+  const row = findUserRow_(sh, user.sub);
+  if (!row) return { error: '가입 정보를 찾지 못했어요.' };
+  sh.getRange(row, 3).setValue(nick);
+  return { nickname: nick };
+}
+
+var USERDATA_MAX_ = 20000; // 한 사람이 저장할 수 있는 JSON 길이 상한
+
+// 관심종목·포트폴리오를 한 칸에 JSON으로 넣는다. 사용자당 한 행이라 단순하다.
+function getUserData(idToken) {
+  const user = verifyIdToken_(idToken);
+  if (!user) return { error: '로그인이 필요합니다.', authRequired: true };
+
+  const sh = userSheet_(DATA_SHEET_, ['sub', 'data', 'updatedAt']);
+  const row = findUserRow_(sh, user.sub);
+  if (!row) return { watchlist: [], portfolio: [] };
+  try {
+    const parsed = JSON.parse(sh.getRange(row, 2).getValue() || '{}');
+    return {
+      watchlist: parsed.watchlist || [],
+      portfolio: parsed.portfolio || [],
+      updatedAt: sh.getRange(row, 3).getValue()
+    };
+  } catch (err) {
+    return { watchlist: [], portfolio: [] };
+  }
+}
+
+function saveUserData(idToken, payloadJson) {
+  const user = verifyIdToken_(idToken);
+  if (!user) return { error: '로그인이 필요합니다.', authRequired: true };
+
+  const raw = String(payloadJson || '');
+  if (raw.length > USERDATA_MAX_) return { error: '저장할 데이터가 너무 큽니다.' };
+
+  var parsed;
+  try { parsed = JSON.parse(raw); } catch (err) { return { error: '데이터 형식이 올바르지 않습니다.' }; }
+
+  // 클라이언트가 뭘 보내든 우리가 쓰는 모양으로만 다시 만든다.
+  const clean = JSON.stringify({
+    watchlist: cleanWatchlist_(parsed.watchlist),
+    portfolio: cleanPortfolio_(parsed.portfolio)
+  });
+
+  const sh = userSheet_(DATA_SHEET_, ['sub', 'data', 'updatedAt']);
+  const row = findUserRow_(sh, user.sub);
+  const now = new Date().toISOString();
+  if (!row) sh.appendRow([user.sub, clean, now]);
+  else sh.getRange(row, 2, 1, 2).setValues([[clean, now]]);
+  return { ok: true, updatedAt: now };
+}
+
+function cleanWatchlist_(list) {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, WATCHLIST_MAX_).map(function (w) {
+    return {
+      symbol: String((w && w.symbol) || '').slice(0, 20),
+      name: String((w && w.name) || '').slice(0, 40)
+    };
+  }).filter(function (w) { return w.symbol; });
+}
+
+var PORTFOLIO_MAX_ = 50;
+
+function cleanPortfolio_(list) {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, PORTFOLIO_MAX_).map(function (p) {
+    const qty = Number((p && p.qty) || 0);
+    const avg = Number((p && p.avgPrice) || 0);
+    return {
+      symbol: String((p && p.symbol) || '').slice(0, 20),
+      name: String((p && p.name) || '').slice(0, 40),
+      qty: isFinite(qty) && qty > 0 ? qty : 0,
+      avgPrice: isFinite(avg) && avg >= 0 ? avg : 0
+    };
+  }).filter(function (p) { return p.symbol && p.qty > 0; });
+}
+
+// 로그인이 필요한 요청은 전부 POST로 받는다. GET 쿼리에 토큰을 실으면 접속 로그·리퍼러에
+// 그대로 남는다 — 토큰은 유효한 동안 그 사람 자체이므로 URL에 두면 안 된다.
+//
+// 브라우저가 사전 요청(preflight)을 보내면 GAS가 응답하지 못해 막힌다. 그래서 프런트는
+// Content-Type을 text/plain으로 보내고, 본문에 JSON을 담는다.
+function doPost(e) {
+  var result;
+  try {
+    var body = {};
+    try { body = JSON.parse((e && e.postData && e.postData.contents) || '{}'); } catch (err) { body = {}; }
+    const action = String(body.action || '');
+    const token = body.idToken || '';
+
+    switch (action) {
+      case 'me':
+        result = getMe(token);
+        break;
+      case 'nickname':
+        result = setNickname(token, body.nickname);
+        break;
+      case 'userdata':
+        result = getUserData(token);
+        break;
+      case 'saveuserdata':
+        result = saveUserData(token, JSON.stringify(body.data || {}));
+        break;
+      default:
+        result = { error: 'unknown action: ' + action };
+    }
+  } catch (err) {
+    console.log('doPost 예외: ' + err);
+    result = { error: scrubSecrets_(String(err)) };
+  }
+  return ContentService
+    .createTextOutput(JSON.stringify(scrubValue_(result)))
+    .setMimeType(ContentService.MimeType.JSON);
+}
