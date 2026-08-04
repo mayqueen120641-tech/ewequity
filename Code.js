@@ -3383,7 +3383,7 @@ function codeByName_(name) {
 
   // 2) 실적 발표는 중소형주가 훨씬 많다. 상위 100종목만 보면 대부분 코드를 못 찾아
   //    주가 반응·수급·공시가 통째로 빠진다. 그래서 종목 검색으로 한 번 더 찾는다.
-  const cacheKey = 'code_' + md5_(target);
+  const cacheKey = 'code_' + target.slice(0, 60);
   const cached = cacheGet_(cacheKey);
   if (cached) return cached.code ? cached : null;
 
@@ -3404,9 +3404,19 @@ function getEarningsDetail(market, key, dateStr, noCache) {
   const date = String(dateStr || '').trim();
   if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: '잘못된 요청입니다.' };
 
-  const cacheKey = 'earndet_' + mk + '_' + md5_(id + '|' + date);
+  // ⚠️ md5_(한글) 결과를 키로 쓰면 서로 다른 종목이 같은 캐시를 공유해 **남의 회사 데이터가
+  //    섞여 나온다**(실측: 현대제철 요청에 효성화학 응답). 캐시 키는 해시하지 말고
+  //    값 자체를 쓴다 — 짧고, 눈으로 확인할 수 있고, 충돌하지 않는다.
+  const cacheKey = 'earndet_' + mk + '_' + date + '_' + id.slice(0, 60);
+  // 캐시에서 꺼낸 값이 **정말 요청한 종목인지** 확인하고 쓴다.
+  // 배포를 반복하는 동안 다른 회사 데이터가 캐시에 섞여 나온 적이 있다(현대제철 요청에
+  // 효성화학 응답). 키를 고쳐도 값이 맞는지 확인하지 않으면 같은 사고가 또 난다 —
+  // 종목이 뒤바뀐 화면은 틀렸다는 걸 알아채기가 거의 불가능하다.
   const cached = noCache ? null : cacheGet_(cacheKey);
-  if (cached) return cached;
+  if (cached && cached.row && cached.row.date === date &&
+      (mk === 'us' ? cached.row.symbol === id : cached.row.name === id)) {
+    return cached;
+  }
 
   const list = getEarnings(noCache);
   const row = (list.upcoming || []).concat(list.recent || []).filter(function (x) {
