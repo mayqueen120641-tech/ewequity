@@ -574,19 +574,20 @@
   .page-head{margin-bottom:18px;display:flex;align-items:center;gap:12px;}
   .page-head .head-text{min-width:0;}
   .page-head .mascot{width:52px;flex:0 0 52px;}
-  /* 브리핑 카드 오른쪽 */
-  .briefing{position:relative;}
+  /* 브리핑 카드 오른쪽.
+     absolute로 띄우고 본문에 padding-right를 주면 **글이 끝까지 좁게 흐른다** —
+     마스코트 아래쪽 빈 공간을 못 쓴다(모바일에서 특히 답답). float으로 두면
+     문단이 마스코트를 지나친 뒤 원래 폭으로 돌아온다. */
   .briefing .mascot{
-    position:absolute;right:16px;top:12px;width:74px;opacity:.95;pointer-events:none;
+    float:right;width:74px;margin:0 0 6px 14px;opacity:.95;pointer-events:none;
   }
-  .briefing-head, .briefing-text, .briefing-tags{padding-right:86px;}
   /* 비어 있는 화면 */
+  .briefing-sectors{clear:both;}
   .empty-art{text-align:center;padding:26px 16px 8px;}
   .empty-art .mascot{width:132px;margin:0 auto 12px;}
   .empty-art .msg{font-size:12.5px;color:var(--sub);line-height:1.75;max-width:420px;margin:0 auto;}
   @media (max-width: 820px){
-    .briefing .mascot{width:56px;right:10px;}
-    .briefing-head, .briefing-text, .briefing-tags{padding-right:64px;}
+    .briefing .mascot{width:56px;margin-left:10px;}
     .page-head .mascot{width:42px;flex:0 0 42px;}
   }
 
