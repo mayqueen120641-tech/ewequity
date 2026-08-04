@@ -445,6 +445,32 @@
     padding:9px 11px;border-left:2px solid var(--panel-border);
   }
   .fin-ai .ai-foot{font-size:10.5px;color:var(--sub);margin-top:10px;}
+  /* 실적 발표 */
+  .call-badge{
+    display:inline-block;padding:1px 6px;border-radius:999px;font-size:10px;
+    background:var(--accent);color:#fff;vertical-align:middle;
+  }
+  .mkt-badge{
+    display:inline-block;padding:1px 6px;border-radius:5px;font-size:10px;
+    background:var(--hover);color:var(--sub);border:1px solid var(--panel-border);
+  }
+  .surprise.pos{color:var(--up);font-weight:600;}
+  .surprise.neg{color:var(--down);font-weight:600;}
+  .earn-cmp{display:flex;gap:8px;margin:12px 0 4px;}
+  .earn-cmp .box{
+    flex:1;background:var(--hover);border:1px solid var(--panel-border);
+    border-radius:9px;padding:10px 11px;
+  }
+  .earn-cmp .box .k{font-size:10.5px;color:var(--sub);margin-bottom:4px;}
+  .earn-cmp .box .v{font-size:15px;font-weight:600;}
+  .earn-react{
+    margin-top:14px;padding:11px 12px;border-radius:9px;background:var(--hover);
+    font-size:12.5px;line-height:1.6;
+  }
+  .earn-files{margin-top:14px;}
+  .earn-files h4{margin:0 0 8px;font-size:12px;color:var(--sub);font-weight:500;}
+  .earn-files a{display:block;font-size:12px;color:var(--text);text-decoration:none;padding:5px 0;}
+  .earn-files a:hover{color:var(--accent);}
   /* 투자자별 수급 — 0선을 가운데 두고 순매수는 위(빨강), 순매도는 아래(파랑). */
   .flow{margin-top:16px;padding-top:14px;border-top:1px solid var(--panel-border);}
   .flow h4{margin:0 0 4px;font-size:12px;color:var(--sub);font-weight:500;}
@@ -596,6 +622,7 @@
       <a href="#/news"><span class="nav-icon">▦</span><span class="nav-label">뉴스</span></a>
       <a href="#/calendar"><span class="nav-icon">▩</span><span class="nav-label">캘린더</span></a>
       <a href="#/finance"><span class="nav-icon">▨</span><span class="nav-label">재무 분석</span></a>
+      <a href="#/earnings"><span class="nav-icon">◈</span><span class="nav-label">실적 발표</span></a>
       <a href="#/portfolio"><span class="nav-icon">◔</span><span class="nav-label">포트폴리오</span></a>
       <a href="#/report"><span class="nav-icon">▣</span><span class="nav-label">리포트</span></a>
       <a href="#/settings"><span class="nav-icon">⚙</span><span class="nav-label">설정</span></a>
@@ -847,6 +874,38 @@
       </section>
 
       <!-- ========== 재무 분석 ========== -->
+      <section class="page" id="page-earnings">
+        <div class="page-head">
+          <h1>실적 발표</h1>
+          <p>주가는 실적이 좋았는지가 아니라 <b>예상보다 좋았는지</b>로 움직입니다. 예상치와 실제치를 같이 보여드려요.</p>
+        </div>
+        <section class="panel">
+          <div class="rank-head">
+            <h2>일정 <span class="watch-count" id="earnBasis"></span></h2>
+            <div class="rank-tabs" id="earnTabs">
+              <button data-tab="upcoming" class="active">발표 예정</button>
+              <button data-tab="recent">발표 완료</button>
+            </div>
+          </div>
+          <div class="rank-wrap">
+            <table class="rank">
+              <thead><tr>
+                <th class="c-rank">시장</th><th>종목</th><th>날짜</th>
+                <th class="c-metric">시각</th><th class="c-metric">예상</th>
+                <th class="c-metric">실제</th><th class="c-metric">예상 대비</th>
+              </tr></thead>
+              <tbody id="earnBody"><tr><td colspan="7" class="rank-empty">불러오는 중…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="fin-note">
+            <b>예상 대비</b>는 증권사들이 예측한 주당순이익(EPS)보다 실제가 몇 % 높거나 낮았는지입니다.
+            사상 최대 실적을 내고도 예상에 못 미치면 주가가 떨어지는 이유가 이것입니다.
+            국내 종목은 <b>예상치(컨센서스)가 공개되지 않아</b> 일정과 실제 결과만 보여드립니다.
+            어닝콜(질의응답)이 함께 열리는 일정에는 <span class="call-badge">콜</span> 표시가 붙습니다.
+          </div>
+        </section>
+      </section>
+
       <section class="page" id="page-finance">
         <div class="page-head">
           <h1>재무 분석</h1>
@@ -950,6 +1009,17 @@
 </div>
 
 <!-- 종목 등락 원인 설명 -->
+<div class="modal-back" id="earnBack">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="earnTitle">
+    <div class="modal-head">
+      <h3 id="earnTitle">-</h3>
+      <button class="modal-close" id="earnClose" aria-label="닫기">×</button>
+    </div>
+    <div class="modal-quote" id="earnSub"></div>
+    <div id="earnDetail"></div>
+  </div>
+</div>
+
 <div class="modal-back" id="finBack">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="finTitle">
     <div class="modal-head">
@@ -2171,6 +2241,175 @@ function mockFinRank() {
   };
 }
 
+// ---------- 실적 발표 ----------
+let earnCache = null;
+let earnLoaded = false;
+let earnTab = 'upcoming';
+let earnReqSeq = 0;
+
+async function loadEarnings(force) {
+  const seq = ++earnReqSeq;
+  const body = document.getElementById('earnBody');
+  body.innerHTML = '<tr><td colspan="7" class="rank-empty">불러오는 중…</td></tr>';
+  try {
+    const d = isConfigured() ? await apiGet('earnings', force ? { nocache: 1 } : {}) : mockEarnings();
+    if (seq !== earnReqSeq) return;
+    earnCache = d;
+  } catch (err) {
+    console.error(err);
+    if (seq !== earnReqSeq) return;
+    earnCache = { upcoming: [], recent: [], error: '실적 일정을 불러오지 못했어요.' };
+  }
+  renderEarnings();
+}
+
+// EPS는 소수점이 의미 있고(0.35 → 0.41), 매출은 자릿수가 커서 단위를 줄인다.
+function fmtEps(v) {
+  return (v === null || v === undefined) ? '–' : (Math.round(v * 100) / 100).toFixed(2);
+}
+
+function renderEarnings() {
+  const body = document.getElementById('earnBody');
+  const basis = document.getElementById('earnBasis');
+  if (!earnCache) return;
+  if (earnCache.error) {
+    body.innerHTML = '<tr><td colspan="7" class="rank-empty">' + esc_(earnCache.error) + '</td></tr>';
+    return;
+  }
+  const rows = earnCache[earnTab] || [];
+  if (basis) basis.textContent = rows.length + '건';
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="7" class="rank-empty">해당하는 일정이 없어요.</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(function (r) {
+    const sur = r.epsSurprise;
+    const surTxt = (sur === null || sur === undefined) ? '–'
+      : '<span class="surprise ' + (sur >= 0 ? 'pos' : 'neg') + '">' +
+        (sur > 0 ? '+' : '') + fmtNum(sur, 1) + '%</span>';
+    const nameCell = esc_(r.name) + (r.hasCall ? ' <span class="call-badge">콜</span>' : '');
+    return '<tr data-market="' + r.market + '" data-key="' + esc_(r.market === 'us' ? r.symbol : r.name) +
+      '" data-date="' + r.date + '">' +
+      '<td><span class="mkt-badge">' + (r.market === 'us' ? '해외' : '국내') + '</span></td>' +
+      '<td>' + nameCell + '</td>' +
+      '<td>' + r.date.slice(5) + '</td>' +
+      '<td class="c-metric dim">' + esc_(r.when || '–') + '</td>' +
+      '<td class="c-metric">' + (r.market === 'us' ? fmtEps(r.epsEst) : '–') + '</td>' +
+      '<td class="c-metric">' + (r.market === 'us' ? fmtEps(r.epsAct) : '–') + '</td>' +
+      '<td class="c-metric">' + surTxt + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function mockEarnings() {
+  return {
+    upcoming: [{ market: 'us', symbol: 'AMD', name: 'AMD', date: '2026-08-04', when: '장 마감 후',
+      epsEst: 1.631, epsAct: null, epsSurprise: null, done: false }],
+    recent: [{ market: 'us', symbol: 'PLTR', name: 'PLTR', date: '2026-08-03', when: '장 마감 후',
+      epsEst: 0.3544, epsAct: 0.41, epsSurprise: 15.7, done: true }],
+    today: '2026-08-04'
+  };
+}
+
+document.getElementById('earnTabs').addEventListener('click', function (ev) {
+  const btn = ev.target.closest('button[data-tab]');
+  if (!btn) return;
+  this.querySelectorAll('button').forEach(function (b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  earnTab = btn.dataset.tab;
+  renderEarnings();
+});
+
+document.getElementById('earnBody').addEventListener('click', function (ev) {
+  const tr = ev.target.closest('tr[data-key]');
+  if (!tr) return;
+  openEarn(tr.dataset.market, tr.dataset.key, tr.dataset.date);
+});
+
+// ---- 실적 상세 모달 ----
+const earnBack = document.getElementById('earnBack');
+let earnDetSeq = 0;
+
+function openEarn(market, key, date) {
+  document.getElementById('earnTitle').textContent = key + ' — 실적';
+  document.getElementById('earnSub').textContent = date;
+  document.getElementById('earnDetail').innerHTML = '<div class="empty">불러오는 중…</div>';
+  earnDetSeq++;
+  earnBack.classList.add('show');
+  loadEarnDetail(market, key, date);
+}
+
+function closeEarn() { earnBack.classList.remove('show'); }
+document.getElementById('earnClose').addEventListener('click', closeEarn);
+earnBack.addEventListener('click', function (ev) { if (ev.target === earnBack) closeEarn(); });
+
+async function loadEarnDetail(market, key, date) {
+  const seq = ++earnDetSeq;
+  const el = document.getElementById('earnDetail');
+  let d;
+  try {
+    d = isConfigured() ? await apiGet('earndetail', { market: market, key: key, date: date })
+      : { row: mockEarnings().recent[0] };
+  } catch (err) {
+    console.error(err);
+    d = { error: '실적 정보를 불러오지 못했어요.' };
+  }
+  if (seq !== earnDetSeq) return;
+  if (d.error) { el.innerHTML = '<div class="empty">' + esc_(d.error) + '</div>'; return; }
+
+  const r = d.row;
+  let html = '';
+  document.getElementById('earnSub').textContent =
+    r.date + (r.when ? ' · ' + r.when : '') + (r.quarter ? ' · ' + r.year + '년 ' + r.quarter + '분기' : '');
+
+  if (r.market === 'us') {
+    html += '<div class="earn-cmp">' +
+      '<div class="box"><div class="k">예상 EPS</div><div class="v">' + fmtEps(r.epsEst) + '</div></div>' +
+      '<div class="box"><div class="k">실제 EPS</div><div class="v">' + fmtEps(r.epsAct) + '</div></div>' +
+      '<div class="box"><div class="k">예상 대비</div><div class="v">' +
+        (r.epsSurprise === null || r.epsSurprise === undefined ? '–'
+          : '<span class="surprise ' + (r.epsSurprise >= 0 ? 'pos' : 'neg') + '">' +
+            (r.epsSurprise > 0 ? '+' : '') + fmtNum(r.epsSurprise, 1) + '%</span>') +
+      '</div></div></div>';
+    if (r.revEst || r.revAct) {
+      html += '<div class="earn-cmp">' +
+        '<div class="box"><div class="k">예상 매출</div><div class="v">' + fmtCap(r.revEst) + '</div></div>' +
+        '<div class="box"><div class="k">실제 매출</div><div class="v">' + fmtCap(r.revAct) + '</div></div>' +
+        '<div class="box"><div class="k">예상 대비</div><div class="v">' +
+          (r.revSurprise === null || r.revSurprise === undefined ? '–'
+            : '<span class="surprise ' + (r.revSurprise >= 0 ? 'pos' : 'neg') + '">' +
+              (r.revSurprise > 0 ? '+' : '') + fmtNum(r.revSurprise, 1) + '%</span>') +
+        '</div></div></div>';
+    }
+  } else {
+    html += '<div class="earn-react">' + esc_(r.desc || '실적 발표') +
+      (r.hasCall ? ' <span class="call-badge">어닝콜</span>' : '') +
+      '<div style="font-size:11px;color:var(--sub);margin-top:6px;">' +
+      '국내는 증권사 예상치(컨센서스)가 공개되지 않아 예상 대비 비교를 만들 수 없습니다.</div></div>';
+  }
+
+  const rc = d.reaction;
+  if (rc) {
+    const cls = changeClass(rc.changePct);
+    html += '<div class="earn-react"><b>발표 후 주가</b><br>' +
+      rc.date + ' · ' + fmtNum(rc.prevClose, 0) + ' → ' + fmtNum(rc.close, 0) +
+      ' <span class="change ' + cls + '">' + (rc.changePct > 0 ? '+' : '') + fmtNum(rc.changePct, 1) + '%</span>' +
+      '</div>';
+  }
+
+  if (d.flow) html += renderFlow(d.flow);
+
+  const files = d.filings || [];
+  if (files.length) {
+    html += '<div class="earn-files"><h4>공시 원문 (DART)</h4>' +
+      files.map(function (f) {
+        return '<a href="' + esc_(f.link) + '" target="_blank" rel="noopener">' +
+          esc_(f.date) + ' · ' + esc_(f.name) + '</a>';
+      }).join('') + '</div>';
+  }
+  el.innerHTML = html;
+}
+
 // ---- 재무 상세 모달 ----
 const finBack = document.getElementById('finBack');
 
@@ -2727,7 +2966,7 @@ document.querySelectorAll('#newsSort button').forEach(function (btn) {
 // ---------- 페이지 전환 (해시 라우터) ----------
 // 정적 HTML 한 장이라 서버 라우팅이 없다. 해시(#/dashboard)로 화면만 갈아끼운다.
 // 새로고침해도 보던 페이지가 유지되고, 뒤로가기도 자연히 동작한다.
-const PAGES = ['dashboard', 'watchlist', 'market', 'search', 'news', 'calendar', 'finance', 'portfolio', 'report', 'settings'];
+const PAGES = ['dashboard', 'watchlist', 'market', 'search', 'news', 'calendar', 'finance', 'earnings', 'portfolio', 'report', 'settings'];
 
 function currentPage() {
   const name = (location.hash || '').replace(/^#\/?/, '');
@@ -2749,6 +2988,7 @@ function showPage(name) {
   if (name === 'report' && !weeklyLoaded) { weeklyLoaded = true; loadWeekly(); }
   // 재무는 하루 한 번 갱신되는 값이라 페이지를 처음 열 때만 부르면 된다.
   if (name === 'finance' && !finLoaded) { finLoaded = true; loadFinRank(); }
+  if (name === 'earnings' && !earnLoaded) { earnLoaded = true; loadEarnings(); }
   window.scrollTo(0, 0);
 }
 
