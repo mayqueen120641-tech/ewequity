@@ -42,7 +42,11 @@
     width:34px;height:34px;border-radius:10px;flex:0 0 auto;
     background:var(--hover);border:1px solid var(--panel-border);
     display:flex;align-items:center;justify-content:center;font-size:17px;
+    overflow:hidden;
   }
+  /* 마스코트는 원본이 정사각형이 아니라 여백이 제각각이다. 꽉 채우지 말고
+     조금 키워서 가운데 정렬해야 얼굴이 잘리지 않는다. */
+  .brand-mark img{width:30px;height:30px;object-fit:contain;}
   .brand-text .logo{font-size:19px;font-weight:800;letter-spacing:-.4px;line-height:1;}
   .brand-text .logo .ewe{color:var(--accent);}
   .brand-text .logo .quity{color:var(--text);}
@@ -562,9 +566,34 @@
   table.rank tbody tr{cursor:pointer;}
   table.rank tbody tr:hover{background:var(--hover);}
 
+  /* ---------- 마스코트 ---------- */
+  /* 이미지가 16개라 전부 받으면 폰에서 무겁다. 화면에 실제로 보일 때만 받도록
+     전부 loading="lazy"를 붙이고, 표시 크기의 2배 해상도(300px)로만 만들어 뒀다. */
+  .mascot{display:block;height:auto;user-select:none;-webkit-user-drag:none;}
+  /* 페이지 제목 옆 작은 마스코트 */
+  .page-head{margin-bottom:18px;display:flex;align-items:center;gap:12px;}
+  .page-head .head-text{min-width:0;}
+  .page-head .mascot{width:52px;flex:0 0 52px;}
+  /* 브리핑 카드 오른쪽 */
+  .briefing{position:relative;}
+  .briefing .mascot{
+    position:absolute;right:16px;top:12px;width:74px;opacity:.95;pointer-events:none;
+  }
+  .briefing-head, .briefing-text, .briefing-tags{padding-right:86px;}
+  /* 비어 있는 화면 */
+  .empty-art{text-align:center;padding:26px 16px 8px;}
+  .empty-art .mascot{width:132px;margin:0 auto 12px;}
+  .empty-art .msg{font-size:12.5px;color:var(--sub);line-height:1.75;max-width:420px;margin:0 auto;}
+  @media (max-width: 820px){
+    .briefing .mascot{width:56px;right:10px;}
+    .briefing-head, .briefing-text, .briefing-tags{padding-right:64px;}
+    .page-head .mascot{width:42px;flex:0 0 42px;}
+  }
+
   /* ---------- 준비 중 화면 ---------- */
   .soon{text-align:center;padding:54px 20px;color:var(--sub);}
   .soon .soon-icon{font-size:38px;margin-bottom:14px;}
+  .soon .mascot{width:150px;margin:0 auto 14px;}
   .soon h3{color:var(--text);font-size:16px;margin:0 0 8px;}
   .soon p{margin:0 auto;font-size:13px;line-height:1.8;max-width:460px;}
 
@@ -605,8 +634,7 @@
 
   <aside class="sidebar">
     <div class="brand">
-      <!-- 마스코트 일러스트가 준비되면 이 자리에 <img>로 넣으면 된다. -->
-      <div class="brand-mark">🐑</div>
+      <div class="brand-mark"><img src="assets/sheep-wink.png" alt="EweQuity 마스코트"></div>
       <div class="brand-text">
         <div class="logo"><span class="ewe">Ewe</span><span class="quity">Quity</span></div>
         <div class="tagline">SMARTER INVESTING, TOGETHER</div>
@@ -678,8 +706,11 @@
       <!-- ========== 대시보드 ========== -->
       <section class="page" id="page-dashboard">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-laptop.png" alt="오늘의 시장을 보고 있는 EweQuity 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>대시보드</h1>
           <p>오늘의 시장 요약과 주요 지표를 한눈에 확인하세요.</p>
+          </div>
         </div>
 
         <!-- AI 브리핑. 저장된 브리핑이 없으면(키 미설정/트리거 미실행) 통째로 숨긴다. -->
@@ -693,6 +724,7 @@
               <button data-mode="plain" type="button" class="active">간결하게</button>
             </div>
           </div>
+          <img class="mascot" src="assets/sheep-desk.png" alt="" loading="lazy" width="74">
           <p class="briefing-text" id="briefingText"></p>
           <div class="briefing-tags" id="briefingTags"></div>
           <div class="briefing-sectors" id="briefingSectors"></div>
@@ -756,8 +788,11 @@
       <!-- ========== 관심 종목 ========== -->
       <section class="page" id="page-watchlist">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-search.png" alt="종목을 살펴보는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>관심 종목</h1>
           <p>담아둔 종목의 현재가와 등락률을 확인하세요.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="watch-head">
@@ -766,7 +801,11 @@
           </div>
           <div class="watch-grid" id="watchGrid"></div>
           <div class="watch-empty" id="watchEmpty">
-            아직 담은 종목이 없어요. <b>종목 검색</b>에서 조회한 뒤 <b>관심종목에 추가</b>를 누르면 여기에 시세 카드로 쌓입니다.
+            <div class="empty-art">
+              <img class="mascot" src="assets/sheep-search.png" alt="" loading="lazy" width="132">
+              <div class="msg">아직 담은 종목이 없어요.<br>
+                <b>종목 검색</b>에서 조회한 뒤 <b>관심종목에 추가</b>를 누르면 여기에 시세 카드로 쌓입니다.</div>
+            </div>
           </div>
         </section>
       </section>
@@ -774,8 +813,11 @@
       <!-- ========== 시장 지표 ========== -->
       <section class="page" id="page-market">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-phone.png" alt="지수를 가리키는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>시장 지표</h1>
           <p>코스피 상위 100종목의 시가총액과 등락률 순위입니다.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="rank-head">
@@ -808,8 +850,11 @@
       <!-- ========== 종목 검색 ========== -->
       <section class="page" id="page-search">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-search.png" alt="종목을 찾는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>종목 검색</h1>
           <p>종목명만 입력해도 자동으로 코드를 찾아서 조회해요.</p>
+          </div>
         </div>
         <section class="panel">
           <h2>검색 결과</h2>
@@ -824,8 +869,11 @@
       <!-- ========== 뉴스 ========== -->
       <section class="page" id="page-news">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-news.png" alt="뉴스를 읽는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>뉴스</h1>
           <p>주요 경제 뉴스를 중요도순 또는 최신순으로 확인하세요.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="news-head">
@@ -852,8 +900,11 @@
       <!-- ========== 캘린더 ========== -->
       <section class="page" id="page-calendar">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-check.png" alt="일정을 확인하는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>경제 캘린더</h1>
           <p>지표 발표일과 국내외 실적 발표 일정입니다. 날짜를 누르면 그날 일정이 아래에 표시됩니다.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="cal-head">
@@ -876,8 +927,11 @@
       <!-- ========== 재무 분석 ========== -->
       <section class="page" id="page-earnings">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-present.png" alt="실적을 발표하는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>실적 발표</h1>
           <p>주가는 실적이 좋았는지가 아니라 <b>예상보다 좋았는지</b>로 움직입니다. 예상치와 실제치를 같이 보여드려요.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="rank-head">
@@ -908,8 +962,11 @@
 
       <section class="page" id="page-finance">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-book.png" alt="재무제표를 읽는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>재무 분석</h1>
           <p>DART 전자공시의 재무제표로 계산한 PER·PBR·ROE입니다. 종목을 누르면 3개년 실적 추이를 볼 수 있어요.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="rank-head">
@@ -954,12 +1011,15 @@
       <!-- ========== 포트폴리오 (준비 중) ========== -->
       <section class="page" id="page-portfolio">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-pie.png" alt="자산 비중을 든 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>포트폴리오</h1>
           <p>보유 종목의 수익률과 자산 비중을 확인하는 화면입니다.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="soon">
-            <div class="soon-icon">◔</div>
+            <img class="mascot" src="assets/sheep-run.png" alt="" loading="lazy" width="150">
             <h3>준비 중입니다</h3>
             <p>
               보유 종목·수량·매입가를 입력하면 총자산과 수익률, 자산 비중을 계산해 보여줄 예정입니다.
@@ -972,8 +1032,11 @@
       <!-- ========== 리포트 (준비 중) ========== -->
       <section class="page" id="page-report">
         <div class="page-head">
+          <img class="mascot" src="assets/sheep-study.png" alt="공부하는 양" loading="lazy" width="52">
+          <div class="head-text">
           <h1>주간 리포트</h1>
           <p>매일 쌓인 브리핑을 모아 이번 주 흐름과 새로 나온 개념을 정리합니다.</p>
+          </div>
         </div>
         <section class="panel">
           <div class="briefing-head" style="margin-bottom:14px;">
@@ -1767,7 +1830,8 @@ async function loadWeekly(force) {
     const d = isConfigured() ? await apiGet('weekly', force ? { nocache: 1 } : {}) : mockWeekly();
 
     if (d.error) {
-      el.innerHTML = '<div class="soon"><div class="soon-icon">▣</div>' +
+      el.innerHTML = '<div class="soon">' +
+        '<img class="mascot" src="assets/sheep-cheer.png" alt="" loading="lazy" width="150">' +
         '<h3>아직 기록이 모이지 않았어요</h3><p>' + esc_(d.error) +
         '<br>브리핑이 3시간마다 갱신되면서 하루에 한 번 기록이 쌓입니다. ' +
         '며칠 지나면 이 화면에서 한 주를 돌아볼 수 있어요.</p></div>';
