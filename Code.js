@@ -59,6 +59,17 @@ function doGet(e) {
       case 'flow':
         result = getFlow((e.parameter && e.parameter.symbol) || '', noCache);
         break;
+      case 'earnings':
+        result = getEarnings(noCache);
+        break;
+      case 'earndetail':
+        result = getEarningsDetail(
+          (e.parameter && e.parameter.market) || 'us',
+          (e.parameter && e.parameter.key) || '',
+          (e.parameter && e.parameter.date) || '',
+          noCache
+        );
+        break;
       default:
         result = { error: 'unknown action: ' + action };
     }
@@ -1145,6 +1156,12 @@ function parseKindEarnings_(html) {
     if (!corp || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
     if (!KIND_EARNINGS_RE_.test(desc)) continue;
 
+    // KIND는 회사 링크에 5자리 내부 ID를 쓰는데, 이게 **종목코드의 앞 5자리**다
+    // (018260 → '01826'). 실측 16종목 전부 일치했다. 다만 문서화된 규칙이 아니라
+    // 추론이므로, 뒤에 0을 붙여 만든 코드가 실제 상장사 코드인지 한 번 더 확인한다.
+    const idm = tr[1].match(/companysummary_open\('(\d{5})'\)/);
+    const code = idm ? idm[1] + '0' : null;
+
     // 같은 행사를 국문/영문 두 건으로 올리는 회사가 많다. 회사+날짜로 묶고,
     // 화면에 한글 설명이 뜨도록 한글이 들어간 쪽을 남긴다.
     const key = corp + '|' + date;
@@ -1156,7 +1173,8 @@ function parseKindEarnings_(html) {
       }
       continue;
     }
-    const item = { date: date, corp: corp, desc: desc, time: /^\d{2}:\d{2}$/.test(time) ? time : '' };
+    const item = { date: date, corp: corp, desc: desc, code: code,
+      time: /^\d{2}:\d{2}$/.test(time) ? time : '' };
     seen[key] = { item: item, korean: isKorean };
     out.push(item);
   }
@@ -1180,7 +1198,18 @@ function parseMajorEarnings_(rows) {
       seen[key] = true;
       return true;
     })
-    .map(function (e) { return { date: e.date, symbol: e.symbol, hour: e.hour || '' }; })
+    // 예상치·실제치를 같이 들고 온다. 주가는 "실적이 좋았나"가 아니라 "예상보다 좋았나"로
+    // 움직이기 때문에, 이 두 값이 있어야 발표 결과를 제대로 보여줄 수 있다.
+    .map(function (e) {
+      return {
+        date: e.date, symbol: e.symbol, hour: e.hour || '',
+        quarter: e.quarter || null, year: e.year || null,
+        epsEst: e.epsEstimate === undefined ? null : e.epsEstimate,
+        epsAct: e.epsActual === undefined ? null : e.epsActual,
+        revEst: e.revenueEstimate === undefined ? null : e.revenueEstimate,
+        revAct: e.revenueActual === undefined ? null : e.revenueActual
+      };
+    })
     .sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
     .slice(0, 80);
 }
@@ -3180,4 +3209,230 @@ function doPost(e) {
   return ContentService
     .createTextOutput(JSON.stringify(scrubValue_(result)))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ================= 13. 실적 발표 (어닝) =================
+// 주가는 "실적이 좋았나"가 아니라 **"예상보다 좋았나"**로 움직인다. 사상 최대 실적을 내고도
+// 예상에 못 미쳐 떨어지는 일이 흔하다. 그래서 예상치와 실제치를 항상 같이 보여준다.
+//
+// ⚠️ 어닝콜 **녹취록·전문 요약은 만들 수 없다.** Finnhub transcripts는 유료 플랜이고
+//    국내는 공개 전문이 사실상 없다. 숫자와 일정까지만 다룬다.
+
+// 예상 대비 몇 % 인지. 예상치가 0에 가까우면 퍼센트가 무의미하게 커지므로 내지 않는다
+// (EPS 0.01 예상에 0.05가 나오면 +400%가 되는데, 이건 정보가 아니라 착시다).
+var SURPRISE_MIN_BASE_ = 0.02;
+
+function surprisePct_(est, act) {
+  if (est === null || act === null || est === undefined || act === undefined) return null;
+  if (Math.abs(est) < SURPRISE_MIN_BASE_) return null;
+  return Math.round(((act - est) / Math.abs(est)) * 1000) / 10;
+}
+
+// "amc"(장 마감 후) / "bmo"(장 개장 전) — 초보자에게는 풀어서 보여준다.
+var EARN_HOUR_ = { amc: '장 마감 후', bmo: '장 시작 전', dmh: '장중' };
+
+function earningsRow_(e) {
+  const sur = surprisePct_(e.epsEst, e.epsAct);
+  return {
+    market: 'us',
+    symbol: e.symbol,
+    name: e.symbol,
+    date: e.date,
+    when: EARN_HOUR_[e.hour] || '',
+    quarter: e.quarter, year: e.year,
+    epsEst: e.epsEst, epsAct: e.epsAct,
+    revEst: e.revEst, revAct: e.revAct,
+    epsSurprise: sur,
+    revSurprise: surprisePct_(e.revEst, e.revAct),
+    // 실제치가 들어왔으면 발표가 끝난 것이다.
+    done: e.epsAct !== null && e.epsAct !== undefined
+  };
+}
+
+// KIND 설명문에 "질의응답"이 있으면 컨퍼런스콜(어닝콜)이 같이 열린다는 뜻이다.
+var KR_CALL_RE_ = /질의\s*응답|컨퍼런스\s*콜|conference\s*call|IR\s*미팅/i;
+
+function krEarningsRow_(e, todayStr) {
+  return {
+    market: 'kr',
+    name: e.corp,
+    code: e.code || null,
+    date: e.date,
+    when: e.time || '',
+    desc: e.desc || '',
+    hasCall: KR_CALL_RE_.test(e.desc || ''),
+    done: e.date < todayStr
+  };
+}
+
+function getEarnings(noCache) {
+  const cal = getCalendar(noCache);
+  if (!cal) return { error: '실적 일정을 불러오지 못했어요.' };
+
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const us = (cal.earnings || []).map(earningsRow_);
+  const kr = (cal.krEarnings || []).map(function (e) { return krEarningsRow_(e, today); });
+
+  const all = us.concat(kr).sort(function (a, b) {
+    return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+  });
+
+  return {
+    upcoming: all.filter(function (x) { return !x.done && x.date >= today; }),
+    recent: all.filter(function (x) { return x.done || x.date < today; })
+      .sort(function (a, b) { return a.date > b.date ? -1 : 1; }),
+    today: today,
+    from: cal.from, to: cal.to
+  };
+}
+
+// ---- 발표 후 주가 반응 ----
+// 언제 반응했는지는 발표 시각에 달렸다. 장 마감 후(amc) 발표면 **다음 거래일**에 반영되고,
+// 장 시작 전(bmo) 발표면 **그날** 반영된다. 이걸 뒤집으면 엉뚱한 날의 등락을 보여주게 된다.
+function reactsSameDay_(when) {
+  return when === '장 시작 전' || when === '장중';
+}
+
+// 일별 종가에서 기준일(포함) 이후 첫 거래일의 등락률을 구한다.
+function reactionFrom_(points, dateStr, sameDay) {
+  if (!points || points.length < 2) return null;
+  for (var i = 1; i < points.length; i++) {
+    const d = String(points[i].date).slice(0, 10);
+    const hit = sameDay ? (d >= dateStr) : (d > dateStr);
+    if (hit) {
+      const prev = points[i - 1].close;
+      const cur = points[i].close;
+      if (!prev || cur === null) return null;
+      return {
+        date: d,
+        prevClose: prev,
+        close: cur,
+        changePct: Math.round(((cur - prev) / prev) * 1000) / 10
+      };
+    }
+  }
+  return null;
+}
+
+function earningsReaction_(symbol, dateStr, when) {
+  // getYahooHistory_는 이미 [{date, close}]로 파싱해서 돌려준다 — 여기서 또 파싱하면 안 된다.
+  const points = safe_(function () { return getYahooHistory_(symbol, '3mo'); });
+  if (!points || !points.length) return null;
+  return reactionFrom_(points, dateStr, reactsSameDay_(when));
+}
+
+// ---- 국내 실적 공시 (DART) ----
+// 잠정실적 공시 자체의 숫자를 뜯어오려면 공시 원문(HTML)을 파싱해야 하는데 서식이 제각각이라
+// 깨지기 쉽다. 여기서는 **공시가 있다는 사실과 원문 링크까지만** 제공한다.
+var DART_LIST_RE_ = /실적|영업\(잠정\)|손익구조/;
+
+// yyyy-MM-dd에서 n일 이동. 월말/연말을 Date가 알아서 넘겨준다.
+function shiftDate_(dateStr, n) {
+  const d = new Date(Number(dateStr.slice(0, 4)), Number(dateStr.slice(5, 7)) - 1,
+    Number(dateStr.slice(8, 10)) + n);
+  return Utilities.formatDate(d, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function dartEarningsFilings_(corpCode, fromDate, toDate) {
+  const key = PropertiesService.getScriptProperties().getProperty('DART_API_KEY');
+  if (!key || !corpCode) return [];
+  const url = DART_BASE_ + 'list.json?crtfc_key=' + key + '&corp_code=' + corpCode +
+    '&bgn_de=' + fromDate.replace(/-/g, '') + '&end_de=' + toDate.replace(/-/g, '') +
+    '&page_count=100';
+  const res = safe_(function () { return UrlFetchApp.fetch(url, { muteHttpExceptions: true }); });
+  if (!res || res.getResponseCode() >= 400) return [];
+  var json;
+  try { json = JSON.parse(res.getContentText()); } catch (err) { return []; }
+  if (json.status !== '000') return [];
+  return (json.list || [])
+    .filter(function (x) { return DART_LIST_RE_.test(x.report_nm || ''); })
+    .slice(0, 5)
+    .map(function (x) {
+      return {
+        name: x.report_nm,
+        date: String(x.rcept_dt || '').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3'),
+        link: 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=' + x.rcept_no
+      };
+    });
+}
+
+// KIND는 종목명만 준다. 코드가 있어야 DART·수급·시세를 붙일 수 있어서 순위표에서 찾아본다.
+// KIND 링크에서 유추한 코드가 진짜 상장사 코드인지 DART 상장사 목록으로 확인한다.
+// 목록에 없으면 유추가 틀린 것이므로 쓰지 않는다 — 엉뚱한 회사의 시세·수급을 보여주느니
+// 아무것도 안 보여주는 편이 낫다.
+function verifiedKrCode_(code) {
+  if (!code || !/^\d{6}$/.test(code)) return null;
+  const map = safe_(function () { return readDartCorpMap_(); }) || {};
+  if (!map[code]) return null;
+  return { code: code, symbol: code + '.KS' };
+}
+
+function codeByName_(name) {
+  const target = String(name || '').replace(/\s/g, '');
+  if (!target) return null;
+
+  // 1) 순위표(상위 100종목)에서 먼저 찾는다 — 추가 호출이 없다.
+  const mk = safe_(function () { return getMarket(false); });
+  const items = (mk && mk.items) || [];
+  for (var i = 0; i < items.length; i++) {
+    // 순위표는 코스피 기준이라 .KS로 본다.
+    if (String(items[i].name).replace(/\s/g, '') === target) {
+      return { code: items[i].code, symbol: items[i].code + '.KS' };
+    }
+  }
+
+  // 2) 실적 발표는 중소형주가 훨씬 많다. 상위 100종목만 보면 대부분 코드를 못 찾아
+  //    주가 반응·수급·공시가 통째로 빠진다. 그래서 종목 검색으로 한 번 더 찾는다.
+  const cacheKey = 'code_' + md5_(target);
+  const cached = cacheGet_(cacheKey);
+  if (cached) return cached.code ? cached : null;
+
+  const found = safe_(function () { return resolveSymbol_(name); });
+  // 국내 종목만 받는다. 해외가 섞여 오면 엉뚱한 회사의 수급을 보여주게 된다.
+  // 코스닥은 .KQ다 — 전부 .KS로 붙이면 시세 조회가 통째로 실패한다.
+  const ok = found && /^\d{6}\.(KS|KQ)$/.test(found.symbol);
+  const out = ok ? { code: krCode_(found.symbol), symbol: found.symbol } : { code: null };
+  cachePut_(cacheKey, out, 86400);
+  return out.code ? out : null;
+}
+
+var EARN_DETAIL_CACHE_SEC_ = 3600;
+
+function getEarningsDetail(market, key, dateStr, noCache) {
+  const mk = String(market || 'us');
+  const id = String(key || '').trim();
+  const date = String(dateStr || '').trim();
+  if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: '잘못된 요청입니다.' };
+
+  const cacheKey = 'earndet_' + mk + '_' + md5_(id + '|' + date);
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const list = getEarnings(noCache);
+  const row = (list.upcoming || []).concat(list.recent || []).filter(function (x) {
+    return x.date === date && (mk === 'us' ? x.symbol === id : x.name === id);
+  })[0];
+  if (!row) return { error: '해당 실적 일정을 찾지 못했어요.' };
+
+  const data = { row: row, market: mk };
+
+  if (mk === 'us') {
+    if (row.done) data.reaction = earningsReaction_(id, date, row.when);
+  } else {
+    // KIND가 준 코드를 먼저 쓰고(중소형주까지 커버), 없거나 미확인이면 이름으로 찾는다.
+    const hit = verifiedKrCode_(row.code) || codeByName_(id);
+    const code = hit && hit.code;
+    data.code = code || null;
+    if (code) {
+      // 국내는 발표 시각이 장중인 경우가 많아 그날부터 본다.
+      data.reaction = earningsReaction_(hit.symbol, date, '장 시작 전');
+      data.flow = safe_(function () { return getFlow(code, false); }) || null;
+      const map = safe_(function () { return readDartCorpMap_(); }) || {};
+      // 공시 접수일과 IR 일정 날짜가 하루이틀 어긋나는 경우가 많아 앞뒤로 넉넉히 본다.
+      data.filings = dartEarningsFilings_(map[code], shiftDate_(date, -4), shiftDate_(date, 2));
+    }
+  }
+
+  cachePut_(cacheKey, data, EARN_DETAIL_CACHE_SEC_);
+  return data;
 }
