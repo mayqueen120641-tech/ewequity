@@ -3617,10 +3617,35 @@ function earningsMarks_(symbol, name, from, to) {
   });
 }
 
+// 사용자는 "삼성전자"라고 친다. 야후 차트 API는 티커만 받으므로 먼저 바꿔줘야 한다.
+// 야후 종목검색은 한글에서 자주 실패하므로(과거 이슈) 순위표 이름 매칭을 먼저 쓴다.
+function resolveChartSymbol_(q) {
+  const clean = String(q || '').trim();
+  if (!clean) return null;
+  // 이미 티커 형태면 그대로. 6자리 숫자만 오면 코스피로 본다.
+  if (/^\d{6}$/.test(clean)) return clean + '.KS';
+  if (/^[A-Za-z0-9.\-]{1,12}$/.test(clean) && /[A-Za-z]/.test(clean)) return clean.toUpperCase();
+  if (/^\d{6}\.(KS|KQ)$/i.test(clean)) return clean.toUpperCase();
+
+  const mapped = KOREAN_TICKER_MAP_[clean.toLowerCase()];
+  if (mapped && mapped.symbol) return mapped.symbol;
+
+  const hit = safe_(function () { return codeByName_(clean); });
+  if (hit && hit.symbol) return hit.symbol;
+
+  const found = safe_(function () { return resolveSymbol_(clean); });
+  return (found && found.symbol) ? found.symbol : null;
+}
+
 function getChart(symbol, rangeKey, noCache) {
-  const sym = String(symbol || '').trim();
-  if (!sym || sym.length > 40) return { error: '종목 코드가 없습니다.' };
+  const raw = String(symbol || '').trim();
+  if (!raw || raw.length > 40) return { error: '종목명 또는 코드를 입력해주세요.' };
   const rk = CHART_RANGES_[rangeKey] ? rangeKey : '3M';
+
+  const sym = resolveChartSymbol_(raw);
+  if (!sym) {
+    return { error: '"' + raw + '"에 해당하는 종목을 찾지 못했어요. 정확한 회사명이나 코드(예: 005930.KS)로 다시 시도해주세요.' };
+  }
 
   const cacheKey = 'chart_' + rk + '_' + sym.toLowerCase();
   const cached = noCache ? null : cacheGet_(cacheKey);
