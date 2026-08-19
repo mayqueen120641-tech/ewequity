@@ -227,7 +227,7 @@ function fetchRatesParallel_() {
     { name: 'nasdaq', url: yahooChartUrl_('^IXIC'), parse: parseYahooQuote_ },
     { name: 'gold', url: yahooChartUrl_('GC=F'), parse: parseYahooQuote_ },
     { name: 'btc', url: yahooChartUrl_('BTC-USD'), parse: parseYahooQuote_ }
-  ];
+  ].concat(bondJobs_(fredKey));
 
   const toFetch = jobs.filter(function (j) { return !j.error; });
   const responses = fetchJobsSafe_(toFetch);
@@ -263,6 +263,19 @@ function fetchRatesParallel_() {
   // usdkrw: 트리거가 받아둔 ECOS 값 → 없으면 방금 병렬로 받아둔 Yahoo(KRW=X) 결과.
   const usdkrw = ecos.usdkrw || results.usdkrw_fallback;
 
+  // 국고채는 ECOS 트리거가 받아둔 값을 쓴다(요청 경로에서 ECOS를 부르면 안 된다).
+  const krb = ecos.krBonds || {};
+  const bonds = {
+    kr3y: krb.kr3y || null,
+    kr10y: krb.kr10y || null,
+    us3y: results.us3y || null,
+    us10y: results.us10y || null,
+    jp10y: results.jp10y || null
+  };
+  // 장단기 금리차 — 화면에서 다시 계산하지 않도록 여기서 한 번만 만든다.
+  bonds.krSpread = yieldSpread_(bonds.kr3y, bonds.kr10y);
+  bonds.usSpread = yieldSpread_(bonds.us3y, bonds.us10y);
+
   return {
     base_rate_kr: baseRateKr,
     base_rate_us: results.base_rate_us,
@@ -271,7 +284,8 @@ function fetchRatesParallel_() {
     kospi: results.kospi,
     nasdaq: results.nasdaq,
     gold: results.gold,
-    btc: results.btc
+    btc: results.btc,
+    bonds: bonds
   };
 }
 
@@ -420,7 +434,9 @@ function refreshEcosCache() {
   const startShort = Utilities.formatDate(new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), 'Asia/Seoul', 'yyyyMMdd');
   const jobs = [
     { name: 'base_rate_kr', url: ecosUrl_(key, '722Y001', startLong, today, '0101000'), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosBaseRate_ },
-    { name: 'usdkrw', url: ecosUrl_(key, '731Y001', startShort, today, '0000001'), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosUsdKrw_ }
+    { name: 'usdkrw', url: ecosUrl_(key, '731Y001', startShort, today, '0000001'), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosUsdKrw_ },
+    // 국고채는 항목 코드를 지정하지 않고 통째로 받아 **이름으로 골라낸다**(코드 변경에 안전).
+    { name: 'krBonds', url: ecosAllItemsUrl_(key, ECOS_RATE_STAT_, startShort, today), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosBonds_ }
   ];
   const responses = fetchJobsSafe_(jobs);
 
@@ -4086,4 +4102,70 @@ function callClaudeExplainOn_(apiKey, name, date, move, news) {
   const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
   if (!tb) return null;
   try { return JSON.parse(tb.text); } catch (err) { return null; }
+}
+
+// ================= 16. 국채 금리 =================
+// 국채 금리는 "돈의 값"이다. 오르면 대출·기업 자금조달이 비싸지고 주식에 부담이 된다.
+//
+// 소스가 나라마다 다르다:
+//   미국 — FRED (일별, 만기별로 정확한 시리즈가 있다)
+//   한국 — ECOS 817Y002 시장금리 (일별). ECOS는 GAS에서 자주 막히므로 **트리거 전용**이다.
+//   일본 — 무료로 일별을 주는 곳이 없다. FRED는 월간(OECD)뿐이라 신선도를 밝히고 쓴다.
+
+var ECOS_RATE_STAT_ = '817Y002';   // 시장금리(일별)
+
+// 항목 코드를 하드코딩하면 ECOS가 코드를 바꿀 때 조용히 틀린 값을 가져온다.
+// 응답에 항목명이 같이 오므로 **이름으로 찾는다** — 코드보다 안전하다.
+var ECOS_BOND_WANT_ = [
+  { key: 'kr3y', label: '국고채 3년', re: /국고채.*3년/ },
+  { key: 'kr10y', label: '국고채 10년', re: /국고채.*10년/ }
+];
+
+function ecosAllItemsUrl_(key, statCode, from, to) {
+  return 'https://ecos.bok.or.kr/api/StatisticSearch/' + key +
+    '/json/kr/1/200/' + statCode + '/D/' + from + '/' + to;
+}
+
+// 같은 항목이 여러 날짜로 오므로 항목별 **가장 최근 값**만 남긴다.
+function parseEcosBonds_(json) {
+  const rows = (json.StatisticSearch && json.StatisticSearch.row) || [];
+  const latest = {};
+  rows.forEach(function (r) {
+    const name = String(r.ITEM_NAME1 || '');
+    const v = parseFloat(r.DATA_VALUE);
+    if (!r.TIME || isNaN(v)) return;
+    ECOS_BOND_WANT_.forEach(function (w) {
+      if (!w.re.test(name)) return;
+      const cur = latest[w.key];
+      if (!cur || r.TIME > cur.date) {
+        latest[w.key] = { value: v, date: r.TIME, name: name };
+      }
+    });
+  });
+  return latest;
+}
+
+// 미국 국채. FRED는 만기별 일별 시리즈를 준다.
+var FRED_BOND_ = [
+  { key: 'us3y', series: 'DGS3', label: '미국 3년' },
+  { key: 'us10y', series: 'DGS10', label: '미국 10년' }
+];
+// 일본은 OECD 월간 자료뿐이다. 일별이 없다는 걸 화면에서 밝힌다.
+var FRED_BOND_MONTHLY_ = [
+  { key: 'jp10y', series: 'IRLTLT01JPM156N', label: '일본 10년' }
+];
+
+function bondJobs_(fredKey) {
+  if (!fredKey) return [];
+  return FRED_BOND_.concat(FRED_BOND_MONTHLY_).map(function (b) {
+    return { name: b.key, url: fredSeriesUrl_(b.series, fredKey), parse: parseFred_ };
+  });
+}
+
+// 장단기 금리차. 10년물이 3년물보다 낮아지는 '역전'은 경기 침체 신호로 자주 인용된다.
+// ⚠️ 다만 이건 **관찰이지 예언이 아니다.** 화면 문구에서 단정하지 않는다.
+function yieldSpread_(short, long) {
+  if (!short || !long || short.error || long.error) return null;
+  if (short.value === null || long.value === null) return null;
+  return Math.round((long.value - short.value) * 100) / 100;
 }

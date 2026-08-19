@@ -449,6 +449,25 @@
     padding:9px 11px;border-left:2px solid var(--panel-border);
   }
   .fin-ai .ai-foot{font-size:10.5px;color:var(--sub);margin-top:10px;}
+  /* 국채 금리 */
+  .bond-wrap{overflow-x:auto;}
+  table.bond-tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:340px;}
+  table.bond-tbl th{
+    text-align:right;padding:7px 6px;color:var(--sub);font-weight:500;font-size:11.5px;
+    border-bottom:1px solid var(--panel-border);
+  }
+  table.bond-tbl th:first-child{text-align:left;}
+  table.bond-tbl td{
+    text-align:right;padding:9px 6px;font-variant-numeric:tabular-nums;
+    border-bottom:1px solid var(--panel-border);
+  }
+  table.bond-tbl tr:last-child td{border-bottom:none;}
+  table.bond-tbl td:first-child{text-align:left;font-weight:600;}
+  table.bond-tbl .stale{font-size:10.5px;color:var(--sub);font-weight:400;margin-left:5px;}
+  table.bond-tbl .none{color:var(--sub);font-weight:400;}
+  .spread-neg{color:var(--down);font-weight:600;}
+  .spread-pos{color:var(--text);}
+
   /* ---------- 차트 분석 ---------- */
   .chart-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;}
   .chart-search{flex:1;min-width:220px;margin:0;}
@@ -816,6 +835,25 @@
           <div class="card"><div class="label">나스닥</div><div class="value">불러오는 중…</div></div>
           <div class="card"><div class="label">금 (Gold)</div><div class="value">불러오는 중…</div></div>
           <div class="card"><div class="label">비트코인</div><div class="value">불러오는 중…</div></div>
+        </section>
+
+        <section class="panel" id="bondPanel">
+          <h2>국채 금리 <span class="watch-count" id="bondBasis"></span></h2>
+          <div class="bond-wrap">
+            <table class="bond-tbl">
+              <thead><tr><th>국가</th><th>3년</th><th>10년</th><th>10년 − 3년</th></tr></thead>
+              <tbody id="bondBody">
+                <tr><td colspan="4" class="rank-empty">불러오는 중…</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="fin-note">
+            <b>국채 금리는 나라가 돈을 빌릴 때 내는 이자</b>입니다. 이게 오르면 기업 대출과 주택담보대출 이자도
+            따라 오르는 경향이 있어 주식에는 부담이 됩니다.
+            <b>10년 − 3년</b>은 장기와 단기 금리의 차이인데, 보통은 오래 빌려줄수록 이자를 더 받으니 <b>양수</b>입니다.
+            이 값이 <b>음수가 되는 걸 '금리 역전'</b>이라고 부르고 경기 침체 신호로 자주 인용되지만,
+            역전 후에도 한참 뒤에야 침체가 오거나 오지 않은 경우도 있습니다 — <b>신호가 아니라 관찰</b>로 봐주세요.
+          </div>
         </section>
 
         <div class="grid2">
@@ -1259,6 +1297,12 @@ async function apiGet(action, params) {
 // ---------- 목업 데이터 (GAS_URL 설정 전 화면 확인용) ----------
 function mockRates() {
   return {
+    bonds: {
+      kr3y: { value: 2.85, date: '20260818' }, kr10y: { value: 3.12, date: '20260818' },
+      us3y: { value: 4.26, date: '2026-08-18' }, us10y: { value: 4.71, date: '2026-08-18' },
+      jp10y: { value: 2.67, date: '2026-06-01' },
+      krSpread: 0.27, usSpread: 0.45
+    },
     base_rate_kr: { value: 3.50, date: '2026-07' },
     base_rate_us: { value: 3.75, date: '2026-06' },
     usdkrw: { value: 1522.50, change: -5.7, date: '2026-07-08' },
@@ -1377,6 +1421,65 @@ const GLOSSARY = {
   '금 (Gold)': '안전자산으로 분류되는 금 선물 가격(온스당 달러). 불확실성이 커지면 대체로 상승하는 경향.',
   '비트코인': '대표적인 암호화폐. 주식·채권과 상관관계가 낮아 대안자산으로도 언급됨.'
 };
+
+// 국채 금리는 카드로 늘어놓으면 대시보드가 산만해진다. 나라 × 만기 표가 훨씬 읽기 쉽다.
+const BOND_ROWS = [
+  { country: '한국', short: 'kr3y', long: 'kr10y', spread: 'krSpread' },
+  { country: '미국', short: 'us3y', long: 'us10y', spread: 'usSpread' },
+  { country: '일본', short: null, long: 'jp10y', spread: null }
+];
+
+// 값이 얼마나 오래됐는지 보여준다. 일본은 월간 자료뿐이라 이 표시가 특히 중요하다 —
+// 오늘 값처럼 보이면 안 된다.
+function bondAge(dateStr) {
+  if (!dateStr) return '';
+  const t = String(dateStr);
+  let d;
+  if (/^\d{8}$/.test(t)) d = new Date(t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6));
+  else d = new Date(t);
+  if (isNaN(d.getTime())) return '';
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days <= 3) return '';
+  if (days <= 31) return '<span class="stale">' + days + '일 전</span>';
+  return '<span class="stale">' + Math.floor(days / 30) + '개월 전</span>';
+}
+
+function bondCell(v) {
+  if (!v || v.error || v.value === null || v.value === undefined) {
+    return '<td class="none">–</td>';
+  }
+  return '<td>' + fmtNum(v.value, 2) + '%' + bondAge(v.date) + '</td>';
+}
+
+function renderBonds(rates) {
+  const body = document.getElementById('bondBody');
+  if (!body) return;
+  const b = rates.bonds || {};
+  const any = ['kr3y', 'kr10y', 'us3y', 'us10y', 'jp10y'].some(function (k) {
+    return b[k] && !b[k].error && b[k].value != null;
+  });
+  if (!any) {
+    body.innerHTML = '<tr><td colspan="4" class="rank-empty">국채 금리를 불러오지 못했어요.</td></tr>';
+    return;
+  }
+  body.innerHTML = BOND_ROWS.map(function (r) {
+    const sp = r.spread ? b[r.spread] : null;
+    let spCell = '<td class="none">–</td>';
+    if (sp !== null && sp !== undefined) {
+      // 역전(음수)은 색으로 눈에 띄게 한다. 다만 "위험"이라고 단정하지는 않는다.
+      const cls = sp < 0 ? 'spread-neg' : 'spread-pos';
+      spCell = '<td class="' + cls + '">' + (sp > 0 ? '+' : '') + fmtNum(sp, 2) + '%p' +
+        (sp < 0 ? ' 역전' : '') + '</td>';
+    }
+    return '<tr><td>' + r.country + '</td>' +
+      bondCell(r.short ? b[r.short] : null) +
+      bondCell(r.long ? b[r.long] : null) +
+      spCell + '</tr>';
+  }).join('');
+
+  const basis = document.getElementById('bondBasis');
+  if (basis) basis.textContent = '한국 ECOS · 미국/일본 FRED';
+}
 
 function renderCards(rates) {
   const cardsEl = document.getElementById('cards');
@@ -1864,10 +1967,13 @@ async function loadRates(force) {
   try {
     const params = force ? { nocache: 1 } : {};
     const rates = isConfigured() ? await apiGet('rates', params) : mockRates();
+    renderBonds(rates);
     renderCards(rates);
   } catch (err) {
     console.error(err);
-    renderCards(mockRates());
+    const m = mockRates();
+    renderBonds(m);
+    renderCards(m);
   }
 }
 
