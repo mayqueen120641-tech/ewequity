@@ -62,6 +62,13 @@ function doGet(e) {
       case 'earnings':
         result = getEarnings(noCache);
         break;
+      case 'chart':
+        result = getChart(
+          (e.parameter && e.parameter.symbol) || '',
+          (e.parameter && e.parameter.range) || '3M',
+          noCache
+        );
+        break;
       case 'earndetail':
         result = getEarningsDetail(
           (e.parameter && e.parameter.market) || 'us',
@@ -866,13 +873,20 @@ function parseYahooPoints_(json) {
   const result = json.chart && json.chart.result && json.chart.result[0];
   if (!result) return [];
   const timestamps = result.timestamp || [];
-  const closes = (result.indicators.quote[0] && result.indicators.quote[0].close) || [];
+  const q = result.indicators.quote[0] || {};
+  const closes = q.close || [];
+  // 야후는 시가·고가·저가·거래량까지 같이 준다. 오랫동안 종가만 쓰고 나머지를 버렸는데,
+  // 캔들차트와 "거래량이 평소의 몇 배인지" 같은 설명이 전부 이 값들에서 나온다.
   const points = [];
   for (let i = 0; i < timestamps.length; i++) {
     if (closes[i] != null) {
       points.push({
         date: Utilities.formatDate(new Date(timestamps[i] * 1000), 'Asia/Seoul', 'yyyy-MM-dd'),
-        close: closes[i]
+        close: closes[i],
+        open: q.open ? q.open[i] : null,
+        high: q.high ? q.high[i] : null,
+        low: q.low ? q.low[i] : null,
+        volume: q.volume ? q.volume[i] : null
       });
     }
   }
@@ -3444,5 +3458,205 @@ function getEarningsDetail(market, key, dateStr, noCache) {
   }
 
   cachePut_(cacheKey, data, EARN_DETAIL_CACHE_SEC_);
+  return data;
+}
+
+// ================= 14. 차트 분석 =================
+// 초보자용 차트의 핵심은 지표를 늘어놓는 게 아니라 **숫자를 문장으로 번역**하고
+// **차트 위에 "무슨 일이 있었는지"를 붙이는 것**이다.
+//
+// ⚠️ 기술적 지표는 초보자에게 곧바로 매수 신호로 읽힌다. "골든크로스 발생!"은 사실상
+//    "사라"다. 여기서는 관찰만 제공하고 판단은 사용자에게 남긴다.
+
+var CHART_RANGES_ = { '1M': '1mo', '3M': '3mo', '6M': '6mo', '1Y': '1y' };
+var CHART_CACHE_SEC_ = 1800;
+
+function chartUrl_(symbol, range) {
+  return 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) +
+    '?interval=1d&range=' + range;
+}
+
+// 이동평균. 앞쪽 n-1개는 계산할 수 없으므로 null로 둔다(선이 0에서 시작하면 안 된다).
+function movingAvg_(vals, n) {
+  const out = [];
+  var sum = 0;
+  for (var i = 0; i < vals.length; i++) {
+    sum += vals[i];
+    if (i >= n) sum -= vals[i - n];
+    out.push(i >= n - 1 ? Math.round((sum / n) * 100) / 100 : null);
+  }
+  return out;
+}
+
+function mean_(a) {
+  return a.length ? a.reduce(function (x, y) { return x + y; }, 0) / a.length : 0;
+}
+
+function round_(v, d) {
+  if (v === null || v === undefined || !isFinite(v)) return null;
+  const m = Math.pow(10, d);
+  return Math.round(v * m) / m;
+}
+
+// 하루 등락률 배열. 첫날은 전일이 없어 제외한다.
+function dailyMoves_(pts) {
+  const out = [];
+  for (var i = 1; i < pts.length; i++) {
+    const prev = pts[i - 1].close;
+    if (prev) out.push({ i: i, pct: ((pts[i].close - prev) / prev) * 100 });
+  }
+  return out;
+}
+
+// 숫자를 그대로 두면 초보자에게 아무 의미가 없다. "평소 대비 몇 배"로 바꿔야 감이 온다.
+function chartStats_(pts, meta) {
+  const closes = pts.map(function (p) { return p.close; });
+  const moves = dailyMoves_(pts);
+  // "평소"의 기준에서 오늘은 빼야 한다. 오늘을 넣으면 크게 움직인 날일수록 평균이 같이
+  // 올라가 자기 자신을 작아 보이게 만든다(실측: 실제 4배인데 2.7배로 나왔다).
+  const baseMoves = moves.slice(0, -1).map(function (m) { return Math.abs(m.pct); });
+  const absMoves = baseMoves.length ? baseMoves : moves.map(function (m) { return Math.abs(m.pct); });
+  const avgMove = mean_(absMoves);
+
+  // 거래량도 같은 이유로 마지막 날을 기준에서 뺀다.
+  const allVols = pts.map(function (p) { return p.volume || 0; }).filter(function (v) { return v > 0; });
+  const baseVols = allVols.slice(0, -1);
+  const avgVol = mean_(baseVols.length ? baseVols : allVols);
+  const last = pts[pts.length - 1];
+  const lastMove = moves.length ? moves[moves.length - 1].pct : null;
+
+  // 52주 위치: 1년 최저~최고 중 지금이 어디쯤인지. 막대 하나로 보여주면 바로 이해된다.
+  const hi = meta.fiftyTwoWeekHigh, lo = meta.fiftyTwoWeekLow;
+  // 야후의 52주 최고/최저는 갱신이 늦을 때가 있어 현재가가 그 범위를 벗어날 수 있다.
+  // 그대로 두면 막대 게이지가 음수/100 초과로 튀어나가 화면이 깨진다.
+  var pos52 = (hi && lo && hi > lo) ? ((last.close - lo) / (hi - lo)) * 100 : null;
+  if (pos52 !== null) pos52 = Math.max(0, Math.min(100, pos52));
+
+  // 최근 2주 오른 날/내린 날 — RSI를 쓰지 않고도 "요즘 분위기"를 전할 수 있다.
+  const recent = moves.slice(-10);
+  const up = recent.filter(function (m) { return m.pct > 0; }).length;
+
+  const ma20 = movingAvg_(closes, 20);
+  const ma60 = movingAvg_(closes, 60);
+  const lastMa20 = ma20[ma20.length - 1];
+  const lastMa60 = ma60[ma60.length - 1];
+
+  return {
+    close: last.close,
+    changePct: round_(lastMove, 2),
+    avgMove: round_(avgMove, 2),
+    // 오늘 움직임이 평소의 몇 배인가 — "5% 하락"보다 "평소의 3배"가 훨씬 잘 와닿는다
+    moveRatio: (avgMove && lastMove !== null) ? round_(Math.abs(lastMove) / avgMove, 1) : null,
+    volume: last.volume || null,
+    avgVolume: round_(avgVol, 0),
+    volRatio: (avgVol && last.volume) ? round_(last.volume / avgVol, 1) : null,
+    high52: hi || null,
+    low52: lo || null,
+    pos52: round_(pos52, 0),
+    upDays: up,
+    downDays: recent.length - up,
+    recentDays: recent.length,
+    ma20: lastMa20,
+    ma60: lastMa60,
+    // 평균선 자체보다 "지금 가격이 한 달 평균보다 몇 % 위/아래인가"가 이해하기 쉽다
+    vsMa20: lastMa20 ? round_(((last.close - lastMa20) / lastMa20) * 100, 1) : null,
+    periodPct: closes.length > 1 ? round_(((last.close - closes[0]) / closes[0]) * 100, 2) : null
+  };
+}
+
+var EVENT_MOVE_RATIO_ = 2.5;  // 평소 변동의 몇 배부터 "크게 움직인 날"로 볼지
+var EVENT_VOL_RATIO_ = 2.5;
+var EVENT_MAX_ = 12;
+
+// 차트 위에 찍을 사건들. 고정 퍼센트(±5%)로 자르면 원래 잘 안 움직이는 종목은
+// 아무것도 안 잡히고, 변동성 큰 종목은 전부 잡힌다. 그래서 **그 종목의 평소 대비**로 본다.
+function chartEvents_(pts, stats) {
+  const moves = dailyMoves_(pts);
+  const avg = stats.avgMove || 1;
+  const avgVol = stats.avgVolume || 0;
+  const out = [];
+
+  moves.forEach(function (m) {
+    const p = pts[m.i];
+    const ratio = Math.abs(m.pct) / avg;
+    const vr = avgVol && p.volume ? p.volume / avgVol : 0;
+    if (ratio >= EVENT_MOVE_RATIO_) {
+      out.push({
+        date: p.date, kind: 'move', pct: round_(m.pct, 2),
+        ratio: round_(ratio, 1), volRatio: round_(vr, 1)
+      });
+    } else if (vr >= EVENT_VOL_RATIO_) {
+      // 가격은 그대로인데 거래량만 튄 날도 의미가 있다(관심이 몰렸다는 뜻).
+      out.push({
+        date: p.date, kind: 'volume', pct: round_(m.pct, 2),
+        ratio: round_(ratio, 1), volRatio: round_(vr, 1)
+      });
+    }
+  });
+
+  // 너무 많으면 차트가 점으로 뒤덮인다. 큰 것부터 남긴다.
+  return out
+    .sort(function (a, b) { return Math.abs(b.ratio) - Math.abs(a.ratio); })
+    .slice(0, EVENT_MAX_)
+    .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+}
+
+// 실적 발표일을 차트에 겹쳐준다 — "이날 왜 튀었지"의 답이 실적인 경우가 아주 많다.
+function earningsMarks_(symbol, name, from, to) {
+  const cal = safe_(function () { return getEarnings(false); });
+  if (!cal) return [];
+  const code = krCode_(symbol);
+  const rows = (cal.upcoming || []).concat(cal.recent || []);
+  const want = String(name || '').replace(/\s/g, '');
+  return rows.filter(function (r) {
+    if (r.date < from || r.date > to) return false;
+    if (code) return r.code === code || (want && String(r.name).replace(/\s/g, '') === want);
+    return r.market === 'us' && r.symbol === String(symbol).toUpperCase();
+  }).map(function (r) {
+    return { date: r.date, kind: 'earnings', label: r.market === 'kr' ? (r.desc || '실적 발표') : '실적 발표' };
+  });
+}
+
+function getChart(symbol, rangeKey, noCache) {
+  const sym = String(symbol || '').trim();
+  if (!sym || sym.length > 40) return { error: '종목 코드가 없습니다.' };
+  const rk = CHART_RANGES_[rangeKey] ? rangeKey : '3M';
+
+  const cacheKey = 'chart_' + rk + '_' + sym.toLowerCase();
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached && cached.symbol === sym) return cached;
+
+  var json;
+  try {
+    json = fetchJson_(chartUrl_(sym, CHART_RANGES_[rk]), { headers: BROWSER_LIKE_HEADERS_ });
+  } catch (err) {
+    return { error: '차트 데이터를 불러오지 못했어요.' };
+  }
+  const result = json.chart && json.chart.result && json.chart.result[0];
+  if (!result) return { error: '차트 데이터를 찾지 못했어요.' };
+
+  const pts = parseYahooPoints_(json);
+  if (pts.length < 5) return { error: '차트를 그릴 만큼 데이터가 없어요.' };
+
+  const meta = result.meta || {};
+  const stats = chartStats_(pts, meta);
+  const closes = pts.map(function (p) { return p.close; });
+
+  const data = {
+    symbol: sym,
+    name: meta.shortName || meta.longName || sym,
+    currency: meta.currency || null,
+    range: rk,
+    candles: pts.map(function (p) {
+      return [p.date, round_(p.open, 2), round_(p.high, 2), round_(p.low, 2), round_(p.close, 2), p.volume || 0];
+    }),
+    ma20: movingAvg_(closes, 20),
+    ma60: movingAvg_(closes, 60),
+    stats: stats,
+    events: chartEvents_(pts, stats)
+      .concat(earningsMarks_(sym, meta.shortName, pts[0].date, pts[pts.length - 1].date))
+      .sort(function (a, b) { return a.date < b.date ? -1 : 1; })
+  };
+  cachePut_(cacheKey, data, CHART_CACHE_SEC_);
   return data;
 }

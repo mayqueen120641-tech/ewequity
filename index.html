@@ -449,6 +449,51 @@
     padding:9px 11px;border-left:2px solid var(--panel-border);
   }
   .fin-ai .ai-foot{font-size:10.5px;color:var(--sub);margin-top:10px;}
+  /* ---------- 차트 분석 ---------- */
+  .chart-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;}
+  .chart-search{flex:1;min-width:220px;margin:0;}
+  .chart-name{font-size:14px;font-weight:600;margin-bottom:8px;}
+  .chart-name .sub{font-size:11.5px;color:var(--sub);font-weight:400;margin-left:6px;}
+  /* 캔버스는 숨겨진 동안 폭이 0이라 제대로 안 그려진다 —
+     showPage에서 다시 그리고, 부모 폭을 기준으로 잡는다. */
+  .chart-wrap{position:relative;width:100%;}
+  .chart-wrap canvas{display:block;width:100%;cursor:pointer;}
+  .chart-legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:10.5px;color:var(--sub);}
+  .chart-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px;}
+  .chart-legend .lg-up{background:var(--up);}
+  .chart-legend .lg-down{background:var(--down);}
+  .chart-legend .lg-ma20{background:var(--accent);}
+  .chart-legend .lg-ma60{background:#9BB0C9;}
+  .chart-legend .lg-ev{background:var(--accent3, #7BA05B);border-radius:50%;}
+  /* 숫자를 문장으로 번역한 카드 */
+  .read-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;}
+  .read-card{background:var(--hover);border:1px solid var(--panel-border);border-radius:10px;padding:12px 13px;}
+  .read-card .rk{font-size:10.5px;color:var(--sub);margin-bottom:5px;}
+  .read-card .rv{font-size:14px;font-weight:600;line-height:1.5;}
+  .read-card .rn{font-size:11.5px;color:var(--sub);line-height:1.6;margin-top:5px;}
+  /* 52주 위치 게이지 */
+  .gauge{height:8px;border-radius:999px;background:linear-gradient(90deg,var(--down),#E8DCC8,var(--up));position:relative;margin:10px 0 6px;}
+  .gauge i{position:absolute;top:-3px;width:3px;height:14px;border-radius:2px;background:var(--text);transform:translateX(-50%);}
+  .gauge-ends{display:flex;justify-content:space-between;font-size:10.5px;color:var(--sub);}
+  /* 사건 목록 */
+  .ev-row{
+    display:flex;align-items:center;gap:10px;padding:9px 4px;cursor:pointer;
+    border-bottom:1px solid var(--panel-border);font-size:12.5px;
+  }
+  .ev-row:last-child{border-bottom:none;}
+  .ev-row:hover{background:var(--hover);}
+  .ev-row .ed{flex:0 0 62px;color:var(--sub);font-size:11.5px;}
+  .ev-row .ep{flex:0 0 66px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;}
+  .ev-row .ex{flex:1;min-width:0;color:var(--sub);font-size:11.5px;}
+  .ev-badge{
+    display:inline-block;padding:1px 6px;border-radius:999px;font-size:10px;
+    background:var(--hover);border:1px solid var(--panel-border);color:var(--sub);
+  }
+  @media (max-width: 820px){
+    .ev-row .ex{flex:0 0 100%;order:3;padding-left:72px;}
+    .ev-row{flex-wrap:wrap;}
+  }
+
   /* 실적 발표 */
   .call-badge{
     display:inline-block;padding:1px 6px;border-radius:999px;font-size:10px;
@@ -651,6 +696,7 @@
       <a href="#/news"><span class="nav-icon">▦</span><span class="nav-label">뉴스</span></a>
       <a href="#/calendar"><span class="nav-icon">▩</span><span class="nav-label">캘린더</span></a>
       <a href="#/finance"><span class="nav-icon">▨</span><span class="nav-label">재무 분석</span></a>
+      <a href="#/chart"><span class="nav-icon">◭</span><span class="nav-label">차트 분석</span></a>
       <a href="#/earnings"><span class="nav-icon">◈</span><span class="nav-label">실적 발표</span></a>
       <a href="#/portfolio"><span class="nav-icon">◔</span><span class="nav-label">포트폴리오</span></a>
       <a href="#/report"><span class="nav-icon">▣</span><span class="nav-label">리포트</span></a>
@@ -926,6 +972,59 @@
       </section>
 
       <!-- ========== 재무 분석 ========== -->
+      <section class="page" id="page-chart">
+        <div class="page-head">
+          <img class="mascot" src="assets/sheep-laptop.png" alt="차트를 보는 양" loading="lazy" width="52">
+          <div class="head-text">
+            <h1>차트 분석</h1>
+            <p>차트를 몰라도 됩니다. 숫자를 말로 풀어주고, <b>크게 움직인 날에 무슨 일이 있었는지</b> 알려드려요.</p>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="chart-bar">
+            <div class="search-box chart-search">
+              <input id="chartInput" type="text" placeholder="종목명 또는 코드 (예: 삼성전자, AAPL)">
+              <button id="chartBtn">조회</button>
+            </div>
+            <div class="rank-tabs" id="chartRanges">
+              <button data-range="1M">1개월</button>
+              <button data-range="3M" class="active">3개월</button>
+              <button data-range="6M">6개월</button>
+              <button data-range="1Y">1년</button>
+            </div>
+          </div>
+
+          <div id="chartName" class="chart-name"></div>
+          <div class="chart-wrap">
+            <canvas id="priceChart"></canvas>
+          </div>
+          <div class="chart-legend">
+            <span><i class="lg-up"></i>오른 날</span>
+            <span><i class="lg-down"></i>내린 날</span>
+            <span><i class="lg-ma20"></i>20일 평균</span>
+            <span><i class="lg-ma60"></i>60일 평균</span>
+            <span><i class="lg-ev"></i>크게 움직인 날 (누르면 이유)</span>
+          </div>
+          <div id="chartMsg" class="empty">종목을 조회하면 차트가 나타납니다.</div>
+        </section>
+
+        <section class="panel" id="chartReadPanel" style="display:none;">
+          <h2>차트 읽어주기</h2>
+          <div id="chartRead"></div>
+        </section>
+
+        <section class="panel" id="chartEventPanel" style="display:none;">
+          <h2>크게 움직인 날</h2>
+          <div id="chartEvents"></div>
+          <div class="fin-note">
+            이 종목의 <b>평소 움직임과 비교해</b> 유난히 컸던 날만 골랐습니다.
+            원래 잘 안 움직이는 종목은 2%도 큰 사건이고, 매일 출렁이는 종목은 5%도 평범합니다.
+            그래서 모든 종목에 같은 기준(예: ±5%)을 쓰지 않았습니다.
+          </div>
+        </section>
+      </section>
+
       <section class="page" id="page-earnings">
         <div class="page-head">
           <img class="mascot" src="assets/sheep-present.png" alt="실적을 발표하는 양" loading="lazy" width="52">
@@ -1435,6 +1534,7 @@ window.addEventListener('resize', function () {
   clearTimeout(resizeTimer_);
   resizeTimer_ = setTimeout(function () {
     if (lastHistoryData) renderChart(lastHistoryData);
+    if (chartData) drawCandles(document.getElementById('priceChart'), chartData);
   }, 150);
 });
 
@@ -2306,6 +2406,316 @@ function mockFinRank() {
   };
 }
 
+// ---------- 차트 분석 ----------
+// 초보자용이라 지표 이름을 늘어놓지 않는다. 캔들 + 거래량 + 평균선까지만 그리고,
+// 나머지는 "평소의 몇 배"처럼 문장으로 풀어준다.
+let chartData = null;
+let chartRange = '3M';
+let chartSymbol = '';
+let chartReqSeq = 0;
+let chartHitAreas = [];   // 사건 점을 눌렀는지 판정하려고 좌표를 기억해 둔다
+
+const CAND = { up: '#D9614C', down: '#4A7FD0', ma20: '#C9A063', ma60: '#9BB0C9', ev: '#7BA05B' };
+
+function drawCandles(canvas, d) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.parentElement.clientWidth;
+  if (!cssW) return;                       // 숨겨진 동안엔 그리지 않는다
+  const cssH = Math.max(260, Math.min(360, Math.round(cssW * 0.42)));
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const rows = d.candles;
+  if (!rows.length) return;
+  const pad = { t: 14, r: 56, b: 46, l: 10 };
+  const volH = 46;                          // 아래쪽 거래량 영역
+  const plotW = Math.max(1, cssW - pad.l - pad.r);
+  const plotH = Math.max(1, cssH - pad.t - pad.b - volH);
+
+  let hi = -Infinity, lo = Infinity, vmax = 0;
+  rows.forEach(function (r) {
+    if (r[2] > hi) hi = r[2];
+    if (r[3] < lo) lo = r[3];
+    if (r[5] > vmax) vmax = r[5];
+  });
+  // 평균선도 화면 안에 들어와야 한다
+  [d.ma20, d.ma60].forEach(function (ma) {
+    (ma || []).forEach(function (v) { if (v != null) { if (v > hi) hi = v; if (v < lo) lo = v; } });
+  });
+  const span = (hi - lo) || 1;
+  hi += span * 0.06; lo -= span * 0.06;
+  const y = function (v) { return pad.t + plotH * (1 - (v - lo) / (hi - lo)); };
+  const volTop = pad.t + plotH + 12;
+  const x = function (i) { return pad.l + (plotW / rows.length) * (i + 0.5); };
+  const bw = Math.max(1.5, Math.min(9, plotW / rows.length * 0.62));
+
+  // 가로 격자 + 오른쪽 가격 눈금
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.textAlign = 'left';
+  for (let i = 0; i <= 4; i++) {
+    const yy = pad.t + (plotH / 4) * i;
+    const val = hi - ((hi - lo) / 4) * i;
+    ctx.strokeStyle = 'rgba(0,0,0,.06)';
+    ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(cssW - pad.r, yy); ctx.stroke();
+    ctx.fillStyle = '#9A8F7F';
+    ctx.fillText(fmtNum(Math.round(val), 0), cssW - pad.r + 6, yy + 3);
+  }
+
+  // 거래량 (가격보다 먼저 그려 뒤로 보내기)
+  rows.forEach(function (r, i) {
+    const up = r[4] >= r[1];
+    const h = vmax ? (r[5] / vmax) * volH : 0;
+    ctx.fillStyle = up ? 'rgba(217,97,76,.32)' : 'rgba(74,127,208,.32)';
+    ctx.fillRect(x(i) - bw / 2, volTop + (volH - h), bw, h);
+  });
+
+  // 평균선
+  [['ma60', CAND.ma60], ['ma20', CAND.ma20]].forEach(function (pair) {
+    const arr = d[pair[0]] || [];
+    ctx.strokeStyle = pair[1]; ctx.lineWidth = 1.4; ctx.beginPath();
+    let started = false;
+    arr.forEach(function (v, i) {
+      if (v == null) return;
+      const px = x(i), py = y(v);
+      if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  });
+
+  // 캔들
+  rows.forEach(function (r, i) {
+    const o = r[1], h = r[2], l = r[3], c = r[4];
+    const up = c >= o;
+    ctx.strokeStyle = up ? CAND.up : CAND.down;
+    ctx.fillStyle = up ? CAND.up : CAND.down;
+    ctx.lineWidth = 1;
+    const px = x(i);
+    ctx.beginPath(); ctx.moveTo(px, y(h)); ctx.lineTo(px, y(l)); ctx.stroke();
+    const top = y(Math.max(o, c));
+    const bh = Math.max(1, Math.abs(y(o) - y(c)));
+    ctx.fillRect(px - bw / 2, top, bw, bh);
+  });
+
+  // 날짜 눈금 (양 끝 + 가운데)
+  ctx.fillStyle = '#9A8F7F';
+  ctx.textAlign = 'center';
+  [0, Math.floor(rows.length / 2), rows.length - 1].forEach(function (i) {
+    ctx.fillText(rows[i][0].slice(5), x(i), cssH - 26);
+  });
+
+  // 사건 점 — 누를 수 있게 좌표를 기억한다
+  chartHitAreas = [];
+  const byDate = {};
+  rows.forEach(function (r, i) { byDate[r[0]] = i; });
+  (d.events || []).forEach(function (ev) {
+    const i = byDate[ev.date];
+    if (i === undefined) return;
+    const px = x(i), py = y(rows[i][2]) - 9;
+    ctx.beginPath();
+    ctx.fillStyle = ev.kind === 'earnings' ? CAND.ma20 : CAND.ev;
+    ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    chartHitAreas.push({ x: px, y: py, ev: ev });
+  });
+}
+
+function fmtVol(v) {
+  if (v === null || v === undefined) return '–';
+  if (v >= 1e8) return (v / 1e8).toFixed(1) + '억 주';
+  if (v >= 1e4) return Math.round(v / 1e4).toLocaleString() + '만 주';
+  return Math.round(v).toLocaleString() + '주';
+}
+
+// 숫자를 그대로 두면 초보자에게 아무 의미가 없다. 전부 "평소 대비"로 바꿔 말한다.
+function renderChartRead(d) {
+  const s = d.stats;
+  const card = function (k, v, note) {
+    return '<div class="read-card"><div class="rk">' + k + '</div><div class="rv">' + v + '</div>' +
+      (note ? '<div class="rn">' + note + '</div>' : '') + '</div>';
+  };
+  const sign = function (n) { return (n > 0 ? '+' : '') + fmtNum(n, 2) + '%'; };
+
+  let html = '<div class="read-grid">';
+
+  // 1) 오늘 움직임 — 절대값이 아니라 평소 대비로
+  if (s.changePct !== null) {
+    const cls = changeClass(s.changePct);
+    const big = s.moveRatio && s.moveRatio >= 2;
+    html += card('오늘 움직임',
+      '<span class="change ' + cls + '">' + sign(s.changePct) + '</span>',
+      s.moveRatio
+        ? ('이 종목은 평소 하루 ±' + fmtNum(s.avgMove, 1) + '% 움직입니다. 오늘은 <b>평소의 ' +
+           fmtNum(s.moveRatio, 1) + '배</b>' + (big ? '로, 평소보다 눈에 띄게 큰 날입니다.' : '입니다.'))
+        : '');
+  }
+
+  // 2) 거래량 = 관심도
+  if (s.volRatio) {
+    html += card('오늘 거래량', fmtVol(s.volume),
+      '평소의 <b>' + fmtNum(s.volRatio, 1) + '배</b>가 거래됐습니다. ' +
+      (s.volRatio >= 2 ? '그만큼 사람들의 관심이 몰렸다는 뜻입니다.'
+                       : '거래량은 관심의 크기로 보면 됩니다.'));
+  }
+
+  // 3) 최근 분위기 — RSI 같은 용어 없이
+  if (s.recentDays) {
+    html += card('최근 ' + s.recentDays + '거래일',
+      '오른 날 ' + s.upDays + ' · 내린 날 ' + s.downDays,
+      s.upDays > s.downDays ? '오른 날이 더 많았습니다.'
+        : s.upDays < s.downDays ? '내린 날이 더 많았습니다.' : '오르내림이 반반이었습니다.');
+  }
+
+  // 4) 한 달 평균 대비 — "이동평균선"이라는 말을 쓰지 않는다
+  if (s.vsMa20 !== null) {
+    html += card('한 달 평균과 비교',
+      (s.vsMa20 > 0 ? '평균보다 위' : '평균보다 아래'),
+      '최근 20거래일 평균 가격보다 <b>' + fmtNum(Math.abs(s.vsMa20), 1) + '% ' +
+      (s.vsMa20 > 0 ? '높습니다' : '낮습니다') + '. ' +
+      '<span style="opacity:.85">평균보다 위라고 좋은 것도, 아래라고 나쁜 것도 아닙니다 — 지금 위치를 보는 기준일 뿐입니다.</span>');
+  }
+
+  // 5) 기간 수익률
+  if (s.periodPct !== null) {
+    const cls = changeClass(s.periodPct);
+    html += card(RANGE_LABEL[d.range] + ' 수익률',
+      '<span class="change ' + cls + '">' + sign(s.periodPct) + '</span>',
+      '이 기간 첫날 종가와 비교한 값입니다.');
+  }
+  html += '</div>';
+
+  // 6) 52주 위치 게이지 — 막대 하나가 문장 열 줄보다 빠르다
+  if (s.pos52 !== null) {
+    html += '<div class="read-card" style="margin-top:10px;">' +
+      '<div class="rk">최근 1년 범위에서 지금 위치</div>' +
+      '<div class="gauge"><i style="left:' + s.pos52 + '%"></i></div>' +
+      '<div class="gauge-ends"><span>최저 ' + fmtNum(s.low52, 0) + '</span>' +
+      '<span>최고 ' + fmtNum(s.high52, 0) + '</span></div>' +
+      '<div class="rn">1년 최저~최고를 100으로 놓으면 지금은 <b>' + s.pos52 + '</b> 지점입니다. ' +
+      '높다고 비싼 것도, 낮다고 싼 것도 아닙니다.</div></div>';
+  }
+  document.getElementById('chartRead').innerHTML = html;
+  document.getElementById('chartReadPanel').style.display = '';
+}
+
+const RANGE_LABEL = { '1M': '1개월', '3M': '3개월', '6M': '6개월', '1Y': '1년' };
+
+function renderChartEvents(d) {
+  const el = document.getElementById('chartEvents');
+  const evs = (d.events || []).slice().reverse();
+  if (!evs.length) {
+    el.innerHTML = '<div class="empty">이 기간에는 평소와 크게 다른 날이 없었습니다.</div>';
+    document.getElementById('chartEventPanel').style.display = '';
+    return;
+  }
+  el.innerHTML = evs.map(function (e) {
+    if (e.kind === 'earnings') {
+      return '<div class="ev-row" data-date="' + e.date + '">' +
+        '<span class="ed">' + e.date.slice(5) + '</span>' +
+        '<span class="ep"><span class="ev-badge">실적</span></span>' +
+        '<span class="ex">' + esc_(e.label || '실적 발표') + '</span></div>';
+    }
+    const cls = changeClass(e.pct);
+    const why = e.kind === 'volume'
+      ? '가격은 크게 안 변했지만 거래량이 평소의 ' + fmtNum(e.volRatio, 1) + '배였습니다'
+      : '평소 움직임의 ' + fmtNum(e.ratio, 1) + '배' +
+        (e.volRatio >= 1.5 ? ' · 거래량도 ' + fmtNum(e.volRatio, 1) + '배' : '');
+    return '<div class="ev-row" data-date="' + e.date + '">' +
+      '<span class="ed">' + e.date.slice(5) + '</span>' +
+      '<span class="ep change ' + cls + '">' + (e.pct > 0 ? '+' : '') + fmtNum(e.pct, 1) + '%</span>' +
+      '<span class="ex">' + why + '</span></div>';
+  }).join('');
+  document.getElementById('chartEventPanel').style.display = '';
+}
+
+async function loadChart(query, force) {
+  const q = String(query || '').trim();
+  if (!q) return;
+  const seq = ++chartReqSeq;
+  const msg = document.getElementById('chartMsg');
+  msg.textContent = '불러오는 중…';
+  msg.style.display = '';
+  try {
+    const d = isConfigured()
+      ? await apiGet('chart', Object.assign({ symbol: q, range: chartRange }, force ? { nocache: 1 } : {}))
+      : mockChart();
+    if (seq !== chartReqSeq) return;
+    if (d.error) { chartData = null; msg.textContent = d.error; return; }
+    chartData = d;
+    chartSymbol = d.symbol;
+    msg.style.display = 'none';
+    document.getElementById('chartName').innerHTML =
+      esc_(d.name) + '<span class="sub">' + esc_(d.symbol) + ' · ' + RANGE_LABEL[d.range] + '</span>';
+    drawCandles(document.getElementById('priceChart'), d);
+    renderChartRead(d);
+    renderChartEvents(d);
+  } catch (err) {
+    console.error(err);
+    if (seq !== chartReqSeq) return;
+    msg.textContent = '차트를 불러오지 못했어요.';
+  }
+}
+
+function mockChart() {
+  const rows = [];
+  let px = 100;
+  for (let i = 0; i < 40; i++) {
+    const o = px, c = px * (1 + (Math.sin(i) * 0.02));
+    rows.push(['2026-07-' + String((i % 28) + 1).padStart(2, '0'),
+      Math.round(o * 100) / 100, Math.round(Math.max(o, c) * 1.01 * 100) / 100,
+      Math.round(Math.min(o, c) * 0.99 * 100) / 100, Math.round(c * 100) / 100,
+      1000000 + i * 5000]);
+    px = c;
+  }
+  return { symbol: 'MOCK', name: '목업 종목', range: '3M', candles: rows,
+    ma20: rows.map(function () { return null; }), ma60: rows.map(function () { return null; }),
+    stats: { close: px, changePct: 1.2, avgMove: 1.1, moveRatio: 1.1, volume: 1200000,
+      avgVolume: 1000000, volRatio: 1.2, high52: 130, low52: 80, pos52: 45,
+      upDays: 6, downDays: 4, recentDays: 10, vsMa20: 2.1, periodPct: 8.4 },
+    events: [{ date: rows[20][0], kind: 'move', pct: 6.2, ratio: 3.1, volRatio: 2.4 }] };
+}
+
+// 사건을 누르면 그날 무슨 일이 있었는지 — 「왜 움직였나」를 그대로 재사용한다
+function openChartEvent(date) {
+  if (!chartData) return;
+  openWhy(chartData.symbol, chartData.name);
+}
+
+document.getElementById('chartBtn').addEventListener('click', function () {
+  loadChart(document.getElementById('chartInput').value);
+});
+document.getElementById('chartInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') loadChart(this.value);
+});
+document.getElementById('chartRanges').addEventListener('click', function (ev) {
+  const b = ev.target.closest('button[data-range]');
+  if (!b || !chartSymbol) {
+    if (b) { this.querySelectorAll('button').forEach(function (x) { x.classList.remove('active'); });
+             b.classList.add('active'); chartRange = b.dataset.range; }
+    return;
+  }
+  this.querySelectorAll('button').forEach(function (x) { x.classList.remove('active'); });
+  b.classList.add('active');
+  chartRange = b.dataset.range;
+  loadChart(chartSymbol);
+});
+document.getElementById('chartEvents').addEventListener('click', function (ev) {
+  const row = ev.target.closest('.ev-row[data-date]');
+  if (row) openChartEvent(row.dataset.date);
+});
+// 차트 위의 점을 직접 눌러도 열리게 한다
+document.getElementById('priceChart').addEventListener('click', function (ev) {
+  const r = this.getBoundingClientRect();
+  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  for (const h of chartHitAreas) {
+    if (Math.abs(h.x - mx) < 9 && Math.abs(h.y - my) < 9) { openChartEvent(h.ev.date); return; }
+  }
+});
+
 // ---------- 실적 발표 ----------
 let earnCache = null;
 let earnLoaded = false;
@@ -3045,7 +3455,7 @@ document.querySelectorAll('#newsSort button').forEach(function (btn) {
 // ---------- 페이지 전환 (해시 라우터) ----------
 // 정적 HTML 한 장이라 서버 라우팅이 없다. 해시(#/dashboard)로 화면만 갈아끼운다.
 // 새로고침해도 보던 페이지가 유지되고, 뒤로가기도 자연히 동작한다.
-const PAGES = ['dashboard', 'watchlist', 'market', 'search', 'news', 'calendar', 'finance', 'earnings', 'portfolio', 'report', 'settings'];
+const PAGES = ['dashboard', 'watchlist', 'market', 'search', 'news', 'calendar', 'finance', 'chart', 'earnings', 'portfolio', 'report', 'settings'];
 
 function currentPage() {
   const name = (location.hash || '').replace(/^#\/?/, '');
@@ -3068,6 +3478,8 @@ function showPage(name) {
   // 재무는 하루 한 번 갱신되는 값이라 페이지를 처음 열 때만 부르면 된다.
   if (name === 'finance' && !finLoaded) { finLoaded = true; loadFinRank(); }
   if (name === 'earnings' && !earnLoaded) { earnLoaded = true; loadEarnings(); }
+  // 캔버스는 숨겨진 동안 폭이 0이라 그 사이 그린 차트는 깨져 있다. 보일 때 다시 그린다.
+  if (name === 'chart' && chartData) drawCandles(document.getElementById('priceChart'), chartData);
   window.scrollTo(0, 0);
 }
 
