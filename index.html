@@ -475,6 +475,13 @@
   .gauge{height:8px;border-radius:999px;background:linear-gradient(90deg,var(--down),#E8DCC8,var(--up));position:relative;margin:10px 0 6px;}
   .gauge i{position:absolute;top:-3px;width:3px;height:14px;border-radius:2px;background:var(--text);transform:translateX(-50%);}
   .gauge-ends{display:flex;justify-content:space-between;font-size:10.5px;color:var(--sub);}
+  .chart-legend .lg-stock{background:var(--accent);}
+  .chart-legend .lg-bench{background:#9BB0C9;}
+  .cmp-verdict{
+    margin-top:10px;padding:11px 12px;border-radius:9px;background:var(--hover);
+    font-size:12.5px;line-height:1.65;
+  }
+  .cmp-verdict b{font-weight:600;}
   /* 사건 목록 */
   .ev-row{
     display:flex;align-items:center;gap:10px;padding:9px 4px;cursor:pointer;
@@ -1014,6 +1021,25 @@
           <div id="chartRead"></div>
         </section>
 
+        <section class="panel" id="chartCmpPanel" style="display:none;">
+          <h2>시장과 비교 <span class="watch-count" id="cmpBasis"></span></h2>
+          <div class="chart-wrap"><canvas id="cmpChart"></canvas></div>
+          <div class="chart-legend">
+            <span><i class="lg-stock"></i><b id="cmpStockName">종목</b></span>
+            <span><i class="lg-bench"></i><b id="cmpBenchName">지수</b></span>
+          </div>
+          <div id="cmpVerdict" class="cmp-verdict"></div>
+          <div class="fin-note">
+            둘 다 <b>기간 첫날을 0%로 맞춰</b> 그린 변화율입니다. 가격 단위가 달라도(원 vs 포인트)
+            이렇게 하면 비교가 됩니다. 시장보다 잘했다고 좋은 종목인 것도, 못했다고 나쁜 종목인 것도 아닙니다.
+          </div>
+        </section>
+
+        <section class="panel" id="chartAiPanel" style="display:none;">
+          <h2>차트 해설</h2>
+          <div id="chartAi"></div>
+        </section>
+
         <section class="panel" id="chartEventPanel" style="display:none;">
           <h2>크게 움직인 날</h2>
           <div id="chartEvents"></div>
@@ -1534,7 +1560,10 @@ window.addEventListener('resize', function () {
   clearTimeout(resizeTimer_);
   resizeTimer_ = setTimeout(function () {
     if (lastHistoryData) renderChart(lastHistoryData);
-    if (chartData) drawCandles(document.getElementById('priceChart'), chartData);
+    if (chartData) {
+      drawCandles(document.getElementById('priceChart'), chartData);
+      drawCompare(document.getElementById('cmpChart'), chartData);
+    }
   }, 150);
 });
 
@@ -2652,7 +2681,9 @@ async function loadChart(query, force) {
       esc_(d.name) + '<span class="sub">' + esc_(d.symbol) + ' · ' + RANGE_LABEL[d.range] + '</span>';
     drawCandles(document.getElementById('priceChart'), d);
     renderChartRead(d);
+    renderCompare(d);
     renderChartEvents(d);
+    loadChartAi(d.symbol, d.range);
   } catch (err) {
     console.error(err);
     if (seq !== chartReqSeq) return;
@@ -2677,6 +2708,121 @@ function mockChart() {
       avgVolume: 1000000, volRatio: 1.2, high52: 130, low52: 80, pos52: 45,
       upDays: 6, downDays: 4, recentDays: 10, vsMa20: 2.1, periodPct: 8.4 },
     events: [{ date: rows[20][0], kind: 'move', pct: 6.2, ratio: 3.1, volRatio: 2.4 }] };
+}
+
+// 종목과 지수를 같은 축에 그린다. 둘 다 첫날 0% 기준 변화율이라 단위가 달라도 겹쳐진다.
+function drawCompare(canvas, d) {
+  const b = d.bench;
+  if (!b || !d.priceSeries) return false;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.parentElement.clientWidth;
+  if (!cssW) return false;
+  const cssH = 210;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const A = d.priceSeries, B = b.series;
+  const pad = { t: 12, r: 54, b: 26, l: 10 };
+  const plotW = Math.max(1, cssW - pad.l - pad.r);
+  const plotH = Math.max(1, cssH - pad.t - pad.b);
+  const all = A.concat(B).filter(function (v) { return v !== null; });
+  let hi = Math.max.apply(null, all), lo = Math.min.apply(null, all);
+  const span = (hi - lo) || 1;
+  hi += span * 0.12; lo -= span * 0.12;
+  const y = function (v) { return pad.t + plotH * (1 - (v - lo) / (hi - lo)); };
+  const x = function (i) { return pad.l + (plotW / Math.max(1, A.length - 1)) * i; };
+
+  // 0% 기준선 — 이 선 위면 올랐고 아래면 내렸다는 뜻이라 가장 중요한 선이다
+  ctx.strokeStyle = 'rgba(0,0,0,.18)';
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(pad.l, y(0)); ctx.lineTo(cssW - pad.r, y(0)); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.fillStyle = '#9A8F7F'; ctx.textAlign = 'left';
+  ctx.fillText('0%', cssW - pad.r + 6, y(0) + 3);
+  [hi, lo].forEach(function (v) {
+    ctx.fillText((v > 0 ? '+' : '') + v.toFixed(0) + '%', cssW - pad.r + 6, y(v) + 3);
+  });
+
+  [[B, '#9BB0C9', 1.5], [A, '#C9A063', 2]].forEach(function (pair) {
+    const arr = pair[0];
+    ctx.strokeStyle = pair[1]; ctx.lineWidth = pair[2];
+    ctx.beginPath();
+    let started = false;
+    arr.forEach(function (v, i) {
+      if (v === null) return;
+      if (!started) { ctx.moveTo(x(i), y(v)); started = true; } else ctx.lineTo(x(i), y(v));
+    });
+    ctx.stroke();
+  });
+  return true;
+}
+
+function renderCompare(d) {
+  const panel = document.getElementById('chartCmpPanel');
+  if (!d.bench || !d.priceSeries) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  document.getElementById('cmpStockName').textContent = d.name;
+  document.getElementById('cmpBenchName').textContent = d.bench.name;
+  document.getElementById('cmpBasis').textContent = RANGE_LABEL[d.range];
+  drawCompare(document.getElementById('cmpChart'), d);
+
+  const mine = d.priceSeries[d.priceSeries.length - 1];
+  const theirs = d.bench.periodPct;
+  const gap = Math.round((mine - theirs) * 10) / 10;
+  const sign = function (v) { return (v > 0 ? '+' : '') + fmtNum(v, 1) + '%'; };
+  // 초보자가 가장 많이 착각하는 지점 — 내 종목이 빠진 건지 시장이 다 빠진 건지
+  let verdict;
+  if (Math.abs(gap) < 0.5) {
+    verdict = '이 기간 <b>' + esc_(d.name) + ' ' + sign(mine) + '</b>, ' +
+      esc_(d.bench.name) + ' ' + sign(theirs) + ' — 시장과 거의 같이 움직였습니다.';
+  } else if (gap > 0) {
+    verdict = '이 기간 <b>' + esc_(d.name) + ' ' + sign(mine) + '</b>, ' +
+      esc_(d.bench.name) + ' ' + sign(theirs) + ' — 시장보다 <b>' + fmtNum(Math.abs(gap), 1) + '%p 나았습니다</b>.' +
+      (mine < 0 ? ' (둘 다 내렸지만 이 종목이 덜 내렸다는 뜻입니다.)' : '');
+  } else {
+    verdict = '이 기간 <b>' + esc_(d.name) + ' ' + sign(mine) + '</b>, ' +
+      esc_(d.bench.name) + ' ' + sign(theirs) + ' — 시장보다 <b>' + fmtNum(Math.abs(gap), 1) + '%p 못했습니다</b>.' +
+      (mine > 0 ? ' (올랐지만 시장이 더 많이 올랐다는 뜻입니다.)' : '');
+  }
+  document.getElementById('cmpVerdict').innerHTML = verdict;
+}
+
+let chartAiSeq = 0;
+
+async function loadChartAi(symbol, range) {
+  const seq = ++chartAiSeq;
+  const panel = document.getElementById('chartAiPanel');
+  const el = document.getElementById('chartAi');
+  panel.style.display = '';
+  el.innerHTML = '<div class="empty">해설을 만드는 중…</div>';
+  let d;
+  try {
+    d = isConfigured() ? await apiGet('chartai', { symbol: symbol, range: range }) : mockChartAi();
+  } catch (err) {
+    console.error(err);
+    d = { error: '해설을 불러오지 못했어요.' };
+  }
+  if (seq !== chartAiSeq) return;
+  if (d.error) { el.innerHTML = '<div class="empty">' + esc_(d.error) + '</div>'; return; }
+  el.innerHTML =
+    '<div class="ai-sum">' + esc_(d.summary) + '</div>' +
+    (d.vsMarket ? '<div class="ai-m"><span class="mk">시장 대비</span><span>' + esc_(d.vsMarket) + '</span></div>' : '') +
+    (d.watch ? '<div class="ai-watch">' + esc_(d.watch) + '</div>' : '') +
+    '<div class="ai-foot">AI가 차트 수치를 풀어 쓴 설명입니다. 앞으로의 예측이 아니며, 투자 판단은 직접 하세요.</div>';
+}
+
+function mockChartAi() {
+  return {
+    summary: '이 기간 주가는 완만하게 올랐습니다. 중간에 평소보다 크게 움직인 날이 한 번 있었습니다. (목업)',
+    vsMarket: '같은 기간 지수보다 조금 나았습니다.',
+    watch: '오른 날이 많다고 수익률이 플러스인 것은 아닙니다. 내린 날의 폭이 더 클 수 있습니다.'
+  };
 }
 
 // 사건을 누르면 그날 무슨 일이 있었는지 — 「왜 움직였나」를 그대로 재사용한다
@@ -3479,7 +3625,10 @@ function showPage(name) {
   if (name === 'finance' && !finLoaded) { finLoaded = true; loadFinRank(); }
   if (name === 'earnings' && !earnLoaded) { earnLoaded = true; loadEarnings(); }
   // 캔버스는 숨겨진 동안 폭이 0이라 그 사이 그린 차트는 깨져 있다. 보일 때 다시 그린다.
-  if (name === 'chart' && chartData) drawCandles(document.getElementById('priceChart'), chartData);
+  if (name === 'chart' && chartData) {
+    drawCandles(document.getElementById('priceChart'), chartData);
+    drawCompare(document.getElementById('cmpChart'), chartData);
+  }
   window.scrollTo(0, 0);
 }
 

@@ -69,6 +69,13 @@ function doGet(e) {
           noCache
         );
         break;
+      case 'chartai':
+        result = getChartAi(
+          (e.parameter && e.parameter.symbol) || '',
+          (e.parameter && e.parameter.range) || '3M',
+          noCache
+        );
+        break;
       case 'earndetail':
         result = getEarningsDetail(
           (e.parameter && e.parameter.market) || 'us',
@@ -3682,6 +3689,202 @@ function getChart(symbol, rangeKey, noCache) {
       .concat(earningsMarks_(sym, meta.shortName, pts[0].date, pts[pts.length - 1].date))
       .sort(function (a, b) { return a.date < b.date ? -1 : 1; })
   };
+  // 같은 기간 지수. 실패해도 차트 본체는 그대로 보여줘야 하므로 safe_로 감싼다.
+  data.priceSeries = toPctSeries_(closes);
+  data.bench = buildBench_(sym, pts.map(function (p) { return p.date; }), rk);
   cachePut_(cacheKey, data, CHART_CACHE_SEC_);
   return data;
+}
+
+// ---- 비교 지수 (D) ----
+// "혼자 빠진 건가, 시장이 다 빠진 건가" — 초보자가 가장 많이 착각하는 지점이다.
+// 같은 기간 지수를 겹쳐 그리면 이 질문이 한눈에 풀린다.
+var BENCH_ = {
+  KS: { symbol: '%5EKS11', name: '코스피' },
+  KQ: { symbol: '%5EKQ11', name: '코스닥' },
+  US: { symbol: '%5EGSPC', name: 'S&P 500' }
+};
+
+function benchFor_(symbol) {
+  const s = String(symbol || '').toUpperCase();
+  if (/\.KQ$/.test(s)) return BENCH_.KQ;
+  if (/\.KS$/.test(s)) return BENCH_.KS;
+  return BENCH_.US;
+}
+
+// 가격 수준이 다른 둘(24만원 vs 6300포인트)을 같은 축에 그릴 수는 없다.
+// 첫날을 0%로 맞춘 **변화율**로 바꿔야 비교가 된다.
+function toPctSeries_(closes) {
+  const base = closes[0];
+  if (!base) return closes.map(function () { return null; });
+  return closes.map(function (c) {
+    return c === null ? null : Math.round(((c - base) / base) * 1000) / 10;
+  });
+}
+
+// 종목과 지수는 휴장일이 다를 수 있다(미국 종목 vs 한국 지수 등).
+// 종목 날짜를 기준으로 삼고, 지수에 그 날짜가 없으면 **직전 값을 이어 쓴다**.
+// 이렇게 안 하면 배열 길이가 어긋나 선이 통째로 밀린다.
+function alignTo_(dates, benchPts) {
+  const map = {};
+  benchPts.forEach(function (p) { map[p.date] = p.close; });
+  const out = [];
+  var last = null;
+  dates.forEach(function (d) {
+    if (map[d] !== undefined) last = map[d];
+    out.push(last);
+  });
+  // 앞쪽이 비어 있으면(지수가 늦게 시작) 첫 유효값으로 채운다
+  var first = null;
+  for (var i = 0; i < out.length; i++) { if (out[i] !== null) { first = out[i]; break; } }
+  return out.map(function (v) { return v === null ? first : v; });
+}
+
+function buildBench_(symbol, dates, rangeKey) {
+  const b = benchFor_(symbol);
+  const pts = safe_(function () {
+    const json = fetchJson_(
+      'https://query1.finance.yahoo.com/v8/finance/chart/' + b.symbol +
+      '?interval=1d&range=' + CHART_RANGES_[rangeKey], { headers: BROWSER_LIKE_HEADERS_ });
+    return parseYahooPoints_(json);
+  });
+  if (!pts || !pts.length) return null;
+  const aligned = alignTo_(dates, pts);
+  if (aligned[0] === null) return null;
+  const series = toPctSeries_(aligned);
+  return {
+    name: b.name,
+    series: series,
+    periodPct: series[series.length - 1]
+  };
+}
+
+// ---- 차트 AI 해설 (E) ----
+// 숫자를 문장으로 바꾸는 건 화면에서 이미 하고 있다. AI가 더할 수 있는 건 **연결**이다 —
+// "평소보다 크게 움직였고, 같은 기간 시장은 올랐다"를 한 흐름으로 읽어주는 것.
+//
+// ⚠️ 차트 해설은 예측으로 미끄러지기 가장 쉬운 자리다. "지지선을 지켰으니 반등이 예상된다"
+//    같은 말은 절대 나오면 안 된다. 스키마와 프롬프트 양쪽에서 막는다.
+
+var CHART_AI_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    summary: {
+      type: 'string',
+      description: '이 기간 주가 흐름을 초보자에게 설명하는 한국어 2~3문장. ' +
+        '주어진 수치에만 근거할 것. 앞으로 어떻게 될지는 절대 쓰지 말 것.'
+    },
+    vsMarket: {
+      type: 'string',
+      description: '같은 기간 지수와 비교해 어땠는지 한국어 1~2문장. ' +
+        '지수 정보가 없으면 빈 문자열.'
+    },
+    watch: {
+      type: 'string',
+      description: '이 차트를 볼 때 초보자가 오해하기 쉬운 점 한국어 1~2문장. ' +
+        '매수/매도 판단이 아니라 해석상의 주의점만.'
+    }
+  },
+  required: ['summary', 'vsMarket', 'watch'],
+  additionalProperties: false
+};
+
+var CHART_AI_CACHE_SEC_ = 3600;
+
+function getChartAi(symbol, rangeKey, noCache) {
+  const key = getProp_('ANTHROPIC_API_KEY');
+  if (!key) return { error: 'AI 해설은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
+
+  const d = getChart(symbol, rangeKey, false);
+  if (!d || d.error) return { error: (d && d.error) || '차트를 불러오지 못했어요.' };
+
+  const s = d.stats;
+  // 주가가 움직이면 해설도 달라져야 한다. 수치를 캐시 키에 넣어 자동으로 만료시킨다.
+  const cacheKey = 'chartai_' + d.range + '_' + d.symbol.toLowerCase() + '_' +
+    [s.close, s.changePct, s.periodPct].join('_');
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const r = callClaudeChartAi_(key, d);
+  if (!r) return { error: '해설을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  const out = {
+    symbol: d.symbol, name: d.name, range: d.range,
+    summary: r.summary, vsMarket: r.vsMarket || null, watch: r.watch,
+    at: new Date().toISOString()
+  };
+  cachePut_(cacheKey, out, CHART_AI_CACHE_SEC_);
+  return out;
+}
+
+var RANGE_KR_ = { '1M': '1개월', '3M': '3개월', '6M': '6개월', '1Y': '1년' };
+
+function callClaudeChartAi_(apiKey, d) {
+  const s = d.stats;
+  const lines = [
+    '- 기간: 최근 ' + (RANGE_KR_[d.range] || d.range),
+    '- 현재가: ' + s.close + (d.currency === 'KRW' ? '원' : ''),
+    '- 이 기간 수익률: ' + s.periodPct + '%',
+    '- 오늘 등락: ' + s.changePct + '%',
+    '- 이 종목의 평소 하루 변동폭: ±' + s.avgMove + '% (오늘은 평소의 ' + s.moveRatio + '배)',
+    '- 오늘 거래량: 평소의 ' + s.volRatio + '배',
+    '- 최근 ' + s.recentDays + '거래일: 오른 날 ' + s.upDays + ', 내린 날 ' + s.downDays,
+    '- 20일 평균 대비: ' + s.vsMa20 + '%',
+    '- 최근 1년 최저~최고 중 현재 위치: ' + s.pos52 + '/100'
+  ];
+  if (d.bench) {
+    lines.push('- 같은 기간 ' + d.bench.name + ': ' + d.bench.periodPct + '%');
+  }
+
+  const evs = (d.events || []).filter(function (e) { return e.kind !== 'earnings'; }).slice(-5);
+  const evText = evs.map(function (e) {
+    return '  ' + e.date + ' ' + (e.pct > 0 ? '+' : '') + e.pct + '% (평소의 ' + e.ratio + '배)';
+  }).join('\n');
+  const earn = (d.events || []).filter(function (e) { return e.kind === 'earnings'; });
+
+  const prompt =
+    '[' + d.name + ' 차트 요약]\n' + lines.join('\n') + '\n\n' +
+    (evText ? '[평소보다 크게 움직인 날]\n' + evText + '\n\n' : '') +
+    (earn.length ? '[이 기간 실적 발표일] ' + earn.map(function (e) { return e.date; }).join(', ') + '\n\n' : '') +
+    'summary에는 이 기간 흐름을 초보자에게 2~3문장으로 설명해줘.\n' +
+    'vsMarket에는 같은 기간 지수와 비교해 어땠는지 써줘. ' +
+    '지수보다 더 오르거나 덜 내렸으면 그 사실을, 반대면 그 사실을 담담하게. ' +
+    '지수 정보가 없으면 빈 문자열.\n' +
+    'watch에는 이 차트를 볼 때 초보자가 오해하기 쉬운 점을 알려줘.\n\n' +
+    '⚠️ 반드시 지킬 것:\n' +
+    '- **앞으로 어떻게 될지 절대 쓰지 마.** "반등이 예상된다", "지지선을 지켰다", ' +
+    '"추세가 이어질 것" 같은 표현 전부 금지다. 지나간 일만 설명해.\n' +
+    '- 매수/매도 추천, 목표가, "지금이 기회" 금지.\n' +
+    '- 주어진 수치만 쓰고 없는 숫자를 지어내지 마. 뉴스나 사건 내용을 아는 척하지 마 ' +
+    '(날짜와 등락률만 주어졌을 뿐 이유는 모른다).\n' +
+    '- "저평가", "싸다", "비싸다" 같은 가치 판단 단어를 쓰지 마.\n' +
+    '- 골든크로스·데드크로스 같은 용어를 신호처럼 쓰지 마. 초보자는 그걸 매매 지시로 읽는다.\n' +
+    '- 어려운 말을 쓰면 괄호로 짧게 풀어줘.';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 1500,
+        output_config: { format: { type: 'json_schema', schema: CHART_AI_SCHEMA_ } },
+        system: '너는 초보 투자자에게 주가 차트를 쉽게 풀어주는 도우미야. ' +
+          '지나간 움직임만 설명하고, 앞으로의 예측이나 투자 권유는 절대 하지 않는다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) {
+    console.log('callClaudeChartAi_: 연결 실패 - ' + err);
+    return null;
+  }
+  const code = res.getResponseCode();
+  const body = res.getContentText();
+  if (code >= 400) { console.log('callClaudeChartAi_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+  const json = JSON.parse(body);
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
+  const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!tb) return null;
+  try { return JSON.parse(tb.text); } catch (err) { return null; }
 }
