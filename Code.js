@@ -4013,8 +4013,8 @@ function getExplainOn(symbol, name, dateStr, noCache) {
       // 못 찾은 이유를 구분해서 알려준다 — "기사가 없다"와 "너무 오래됐다"는 다르다
       error: found.reached
         ? '"' + nm + '"의 ' + date + ' 기사를 찾지 못했어요. 그날 관련 보도가 없었을 수 있습니다.'
-        : '네이버 뉴스 검색이 그 날짜까지 닿지 못했어요(최신 기사부터 1000건이 상한입니다). ' +
-          date + '까지 닿지 못했어요.' + (found.oldest ? ' (확인된 가장 오래된 기사: ' + found.oldest + ')' : '')
+        : '뉴스 검색이 ' + date + '까지 닿지 못했어요.' +
+          (found.oldest ? ' "' + nm + '" 기사를 ' + found.oldest + '까지 거슬러 올라갔지만 그보다 과거는 볼 수 없었습니다.' : '')
     };
     cachePut_(cacheKey, data, 3600);
     return data;
