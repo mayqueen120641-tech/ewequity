@@ -69,6 +69,14 @@ function doGet(e) {
           noCache
         );
         break;
+      case 'explainday':
+        result = getExplainOn(
+          (e.parameter && e.parameter.symbol) || '',
+          (e.parameter && e.parameter.name) || '',
+          (e.parameter && e.parameter.date) || '',
+          noCache
+        );
+        break;
       case 'chartai':
         result = getChartAi(
           (e.parameter && e.parameter.symbol) || '',
@@ -3883,6 +3891,197 @@ function callClaudeChartAi_(apiKey, d) {
   const body = res.getContentText();
   if (code >= 400) { console.log('callClaudeChartAi_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
   const json = JSON.parse(body);
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
+  const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!tb) return null;
+  try { return JSON.parse(tb.text); } catch (err) { return null; }
+}
+
+// ================= 15. 특정 날짜의 뉴스 =================
+// 차트에서 "이날 왜 움직였나"를 누르면 그날 뉴스를 보여줘야 한다. 그런데 네이버 뉴스 검색에는
+// **날짜 범위 파라미터가 없다.** 최신순으로 페이지를 넘기며 과거로 거슬러 갈 수밖에 없다.
+// start는 최대 1000까지라 무한정 갈 수 없으므로, 못 닿으면 **솔직히 못 찾았다고 말한다.**
+
+var NEWS_PAGE_SIZE_ = 100;
+var NEWS_MAX_PAGES_ = 10;     // 네이버 상한(start 1000)까지 훑는다
+var NEWS_START_MAX_ = 1000;   // 네이버 제한
+
+function ymdOf_(pubDate) {
+  const t = new Date(pubDate).getTime();
+  if (!t) return null;
+  return Utilities.formatDate(new Date(t), 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+// targetDate(그리고 그 전날)에 나온 기사만 모은다.
+// 전날을 포함하는 이유: 장 마감 후나 새벽에 나온 기사가 다음 날 주가를 움직이는 일이 흔하다.
+function searchStockNewsOn_(name, targetDate, query) {
+  const headers = {
+    'X-Naver-Client-Id': getProp_('NAVER_CLIENT_ID'),
+    'X-Naver-Client-Secret': getProp_('NAVER_CLIENT_SECRET')
+  };
+  const q = query || name;
+  const from = shiftDate_(targetDate, -1);
+  const out = [];
+  const seen = {};
+  var reached = false;   // 목표 날짜까지 실제로 거슬러 갔는지
+  var oldest = null;
+
+  for (var page = 0; page < NEWS_MAX_PAGES_; page++) {
+    const start = page * NEWS_PAGE_SIZE_ + 1;
+    if (start > NEWS_START_MAX_) break;
+    var items;
+    try {
+      const res = UrlFetchApp.fetch(
+        'https://openapi.naver.com/v1/search/news.json?query=' + encodeURIComponent(q) +
+        '&display=' + NEWS_PAGE_SIZE_ + '&start=' + start + '&sort=date',
+        { headers: headers, muteHttpExceptions: true });
+      if (res.getResponseCode() >= 400) break;
+      items = JSON.parse(res.getContentText()).items || [];
+    } catch (err) {
+      break;
+    }
+    if (!items.length) break;
+
+    items.forEach(function (it) {
+      const d = ymdOf_(it.pubDate);
+      if (!d) return;
+      if (!oldest || d < oldest) oldest = d;
+      if (d < from || d > targetDate) return;
+      if (!it.link || seen[it.link]) return;
+      seen[it.link] = true;
+      out.push({
+        title: stripTags_(it.title),
+        description: stripTags_(it.description),
+        link: it.link,
+        pubDate: it.pubDate,
+        date: d
+      });
+    });
+
+    // 이번 페이지의 가장 오래된 기사가 이미 목표 구간보다 과거면 더 볼 필요가 없다.
+    const lastDate = ymdOf_(items[items.length - 1].pubDate);
+    if (lastDate && lastDate < from) { reached = true; break; }
+  }
+  // 검색이 목표 날짜보다 과거까지 닿았으면 "그날 기사가 없다"가 확실하고,
+  // 못 닿았으면 "너무 오래돼서 찾을 수 없다"가 맞다. 이 둘은 사용자에게 다른 말이다.
+  return { items: out.slice(0, 14), reached: reached || (oldest !== null && oldest <= from), oldest: oldest };
+}
+
+// 그날의 등락률. 차트 데이터를 그대로 쓰면 추가 호출이 없다.
+function moveOnDate_(symbol, date) {
+  const pts = safe_(function () { return getYahooHistory_(symbol, '1y'); });
+  if (!pts || !pts.length) return null;
+  for (var i = 1; i < pts.length; i++) {
+    if (pts[i].date === date) {
+      const prev = pts[i - 1].close, cur = pts[i].close;
+      if (!prev) return null;
+      return { close: cur, changePct: Math.round(((cur - prev) / prev) * 1000) / 10 };
+    }
+  }
+  return null;
+}
+
+var EXPLAIN_DAY_CACHE_SEC_ = 21600; // 과거 일은 바뀌지 않으므로 길게 잡는다
+
+function getExplainOn(symbol, name, dateStr, noCache) {
+  const sym = String(symbol || '').trim();
+  const nm = String(name || '').trim() || sym;
+  const date = String(dateStr || '').trim();
+  if (!sym || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: '잘못된 요청입니다.' };
+
+  const cacheKey = 'explainday_' + date + '_' + sym.toLowerCase();
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const key = getProp_('ANTHROPIC_API_KEY');
+  if (!key) return { error: 'AI 설명 기능은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
+
+  // 종목명만으로 검색하면 대형주는 하루 수백 건이 쏟아져 600~1000건으로도 며칠을 못 간다
+  // (실측: 삼성전자는 1000건이 하루치). "주가"를 붙여 범위를 좁히면 훨씬 멀리 닿고,
+  // 어차피 우리가 찾는 건 주가를 움직인 기사라 관련도도 올라간다.
+  var found = searchStockNewsOn_(nm, date, nm + ' 주가');
+  // 좁힌 검색으로 못 찾았고 아직 그날까지 닿지도 못했으면 종목명만으로 한 번 더 시도한다.
+  if (!found.items.length && !found.reached) {
+    const wide = searchStockNewsOn_(nm, date);
+    if (wide.items.length || wide.reached) found = wide;
+  }
+  const move = moveOnDate_(sym, date);
+
+  if (!found.items.length) {
+    const data = {
+      symbol: sym, name: nm, date: date, move: move, explanation: null,
+      // 못 찾은 이유를 구분해서 알려준다 — "기사가 없다"와 "너무 오래됐다"는 다르다
+      error: found.reached
+        ? '"' + nm + '"의 ' + date + ' 기사를 찾지 못했어요. 그날 관련 보도가 없었을 수 있습니다.'
+        : '네이버 뉴스 검색이 그 날짜까지 닿지 못했어요(최신 기사부터 1000건이 상한입니다). ' +
+          date + '까지 닿지 못했어요.' + (found.oldest ? ' (확인된 가장 오래된 기사: ' + found.oldest + ')' : '')
+    };
+    cachePut_(cacheKey, data, 3600);
+    return data;
+  }
+
+  const result = callClaudeExplainOn_(key, nm, date, move, found.items);
+  if (!result) return { symbol: sym, name: nm, date: date, move: move, explanation: null,
+    error: '설명을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  const evidence = (result.evidence || [])
+    .map(function (e) {
+      const it = found.items[e.id];
+      return it ? { title: it.title, link: it.link, pubDate: it.pubDate, note: e.note } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+
+  const data = {
+    symbol: sym, name: nm, date: date, move: move,
+    explanation: result.explanation, confidence: result.confidence,
+    evidence: evidence, newsCount: found.items.length,
+    at: new Date().toISOString()
+  };
+  cachePut_(cacheKey, data, EXPLAIN_DAY_CACHE_SEC_);
+  return data;
+}
+
+function callClaudeExplainOn_(apiKey, name, date, move, news) {
+  const moved = move
+    ? name + '은(는) ' + date + '에 ' + move.changePct + '% ' +
+      (move.changePct >= 0 ? '올랐다' : '내렸다') + '(종가 ' + move.close + ').'
+    : name + '의 ' + date + ' 등락률은 확인되지 않았다.';
+
+  const lines = news.map(function (n, i) {
+    return i + '. [' + n.date + '] ' + n.title + ' — ' + String(n.description || '').slice(0, 100);
+  }).join('\n');
+
+  const prompt =
+    moved + '\n\n[' + date + ' 전후 ' + name + ' 뉴스]\n' + lines + '\n\n' +
+    'explanation에는 **그날** 이 종목이 왜 그렇게 움직였는지 초보 투자자도 이해할 수 있게 ' +
+    '2~3문장으로 설명해줘. 지나간 날의 이야기이므로 과거형으로 쓴다.\n' +
+    'evidence에는 근거가 된 뉴스 번호를 최대 4개까지 골라줘.\n' +
+    '⚠️ 뉴스에 없는 사실을 지어내지 마. 뚜렷한 재료가 없으면 솔직히 밝히고 ' +
+    'evidence는 비우고 confidence는 low로 해. 종목명만 겹칠 뿐 주가와 무관한 기사는 쓰지 마.\n' +
+    '⚠️ 매수/매도 추천이나 목표가, 앞으로의 전망은 절대 쓰지 마. 그날 무슨 일이 있었는지만 설명해.\n' +
+    'flowNote는 빈 문자열로 둬.';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 1500,
+        output_config: { format: { type: 'json_schema', schema: EXPLAIN_SCHEMA_ } },
+        system: '너는 초보 투자자에게 주식 시장을 쉽게 설명해주는 도우미야. ' +
+          '투자 권유는 하지 않고, 무슨 일이 있었는지 사실만 담백하게 전한다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) { return null; }
+  if (res.getResponseCode() >= 400) {
+    console.log('callClaudeExplainOn_: HTTP ' + res.getResponseCode());
+    return null;
+  }
+  const json = JSON.parse(res.getContentText());
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
   const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
   if (!tb) return null;

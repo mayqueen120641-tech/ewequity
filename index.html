@@ -2825,10 +2825,64 @@ function mockChartAi() {
   };
 }
 
-// 사건을 누르면 그날 무슨 일이 있었는지 — 「왜 움직였나」를 그대로 재사용한다
+// 사건을 누르면 **그날** 뉴스를 찾아 설명한다.
+// 예전에는 「왜 움직였나」를 그대로 썼는데, 그건 오늘 기준으로 뉴스를 검색해서
+// 3개월 전 사건을 눌러도 오늘 기사가 떴다 — 날짜가 어긋난 설명은 없느니만 못하다.
+let whyDaySeq = 0;
+
 function openChartEvent(date) {
   if (!chartData) return;
-  openWhy(chartData.symbol, chartData.name);
+  const back = document.getElementById('whyBack');
+  document.getElementById('whyTitle').textContent = chartData.name + ' — ' + date;
+  document.getElementById('whyQuote').innerHTML = '';
+  document.getElementById('whyBody').innerHTML = '<div class="empty">그날 뉴스를 찾는 중…</div>';
+  back.classList.add('show');
+  loadWhyOn(chartData.symbol, chartData.name, date);
+}
+
+async function loadWhyOn(symbol, name, date) {
+  const seq = ++whyDaySeq;
+  const bodyEl = document.getElementById('whyBody');
+  const quoteEl = document.getElementById('whyQuote');
+  let d;
+  try {
+    d = isConfigured()
+      ? await apiGet('explainday', { symbol: symbol, name: name, date: date })
+      : { move: { close: 1000, changePct: 5.2 }, explanation: '목업 설명입니다.', confidence: 'medium', evidence: [] };
+  } catch (err) {
+    console.error(err);
+    d = { error: '불러오지 못했어요.' };
+  }
+  if (seq !== whyDaySeq) return;
+
+  if (d.move) {
+    const cls = changeClass(d.move.changePct);
+    quoteEl.innerHTML = fmtNum(d.move.close, 0) +
+      ' <span class="change ' + cls + '">' + changeArrow(d.move.changePct) + ' ' +
+      fmtNum(Math.abs(d.move.changePct), 1) + '%</span>' +
+      '<div style="margin-top:4px;font-size:11.5px;color:var(--sub);">' + date + ' 종가 기준</div>';
+  }
+
+  if (!d.explanation) {
+    // 왜 못 찾았는지를 구분해서 보여준다. "기사가 없었다"와 "검색이 못 닿았다"는 다른 이야기다.
+    bodyEl.innerHTML = '<div class="empty">' + esc_(d.error || '설명을 만들지 못했어요.') + '</div>' +
+      '<div class="modal-foot">네이버 뉴스 검색에는 날짜 범위 조건이 없어서, 최신 기사부터 거슬러 올라가는 방식으로 찾습니다. ' +
+      '기사가 많은 대형주일수록 며칠 전 기사에도 닿기 어렵습니다.</div>';
+    return;
+  }
+
+  const conf = d.confidence || 'low';
+  let html = '<div>' + esc_(d.explanation) +
+    '<span class="modal-conf ' + conf + '">' + (CONF_LABEL[conf] || conf) + '</span></div>';
+  if ((d.evidence || []).length) {
+    html += '<div class="modal-ev"><h4>그날 나온 뉴스</h4><ul style="margin:0;padding:0;">' +
+      d.evidence.map(function (e) {
+        return '<li><a href="' + esc_(e.link) + '" target="_blank" rel="noopener">' + esc_(e.title) + '</a>' +
+          '<div class="note">' + esc_(e.note) + '</div></li>';
+      }).join('') + '</ul></div>';
+  }
+  html += '<div class="modal-foot">AI가 그날 전후 뉴스를 읽고 정리한 설명입니다. 투자 참고용입니다.</div>';
+  bodyEl.innerHTML = html;
 }
 
 document.getElementById('chartBtn').addEventListener('click', function () {
