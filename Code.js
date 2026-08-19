@@ -264,10 +264,9 @@ function fetchRatesParallel_() {
   const usdkrw = ecos.usdkrw || results.usdkrw_fallback;
 
   // 국고채는 ECOS 트리거가 받아둔 값을 쓴다(요청 경로에서 ECOS를 부르면 안 된다).
-  const krb = ecos.krBonds || {};
   const bonds = {
-    kr3y: krb.kr3y || null,
-    kr10y: krb.kr10y || null,
+    kr3y: ecos.bond_kr3y || null,
+    kr10y: ecos.bond_kr10y || null,
     us3y: results.us3y || null,
     us10y: results.us10y || null,
     jp10y: results.jp10y || null
@@ -435,9 +434,14 @@ function refreshEcosCache() {
   const jobs = [
     { name: 'base_rate_kr', url: ecosUrl_(key, '722Y001', startLong, today, '0101000'), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosBaseRate_ },
     { name: 'usdkrw', url: ecosUrl_(key, '731Y001', startShort, today, '0000001'), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosUsdKrw_ },
-    // 국고채는 항목 코드를 지정하지 않고 통째로 받아 **이름으로 골라낸다**(코드 변경에 안전).
-    { name: 'krBonds', url: ecosAllItemsUrl_(key, ECOS_RATE_STAT_, startShort, today), headers: BROWSER_LIKE_HEADERS_, parse: parseEcosBonds_ }
-  ];
+  ].concat(ECOS_BOND_WANT_.map(function (w) {
+    return {
+      name: 'bond_' + w.key,
+      url: ecosUrl_(key, ECOS_RATE_STAT_, startShort, today, w.code),
+      headers: BROWSER_LIKE_HEADERS_,
+      parse: function (json) { return parseEcosBondSeries_(json, w); }
+    };
+  }));
   const responses = fetchJobsSafe_(jobs);
 
   // 둘 중 하나만 성공했으면 그것만 갱신하고 나머지는 기존 값을 유지한다.
@@ -4116,33 +4120,26 @@ var ECOS_RATE_STAT_ = '817Y002';   // 시장금리(일별)
 
 // 항목 코드를 하드코딩하면 ECOS가 코드를 바꿀 때 조용히 틀린 값을 가져온다.
 // 응답에 항목명이 같이 오므로 **이름으로 찾는다** — 코드보다 안전하다.
+// ECOS StatisticItemList로 확인한 실제 코드다(추측 아님).
+// 다른 만기: 1년 010190000, 5년 010200001, 20년 010220000
 var ECOS_BOND_WANT_ = [
-  { key: 'kr3y', label: '국고채 3년', re: /국고채.*3년/ },
-  { key: 'kr10y', label: '국고채 10년', re: /국고채.*10년/ }
+  { key: 'kr3y', code: '010200000', re: /국고채.*3년/ },
+  { key: 'kr10y', code: '010210000', re: /국고채.*10년/ }
 ];
 
-function ecosAllItemsUrl_(key, statCode, from, to) {
-  return 'https://ecos.bok.or.kr/api/StatisticSearch/' + key +
-    '/json/kr/1/200/' + statCode + '/D/' + from + '/' + to;
-}
-
-// 같은 항목이 여러 날짜로 오므로 항목별 **가장 최근 값**만 남긴다.
-function parseEcosBonds_(json) {
+// 코드로 조회하되 **응답의 항목명이 기대와 맞는지 확인**한다.
+// ECOS가 코드 뜻을 바꾸면 조용히 다른 만기 금리를 보여주게 되는데, 숫자가 그럴듯해서
+// 알아채기 어렵다. 이름이 안 맞으면 값을 버린다.
+function parseEcosBondSeries_(json, want) {
   const rows = (json.StatisticSearch && json.StatisticSearch.row) || [];
-  const latest = {};
+  var best = null;
   rows.forEach(function (r) {
-    const name = String(r.ITEM_NAME1 || '');
     const v = parseFloat(r.DATA_VALUE);
     if (!r.TIME || isNaN(v)) return;
-    ECOS_BOND_WANT_.forEach(function (w) {
-      if (!w.re.test(name)) return;
-      const cur = latest[w.key];
-      if (!cur || r.TIME > cur.date) {
-        latest[w.key] = { value: v, date: r.TIME, name: name };
-      }
-    });
+    if (!want.re.test(String(r.ITEM_NAME1 || ''))) return;
+    if (!best || r.TIME > best.date) best = { value: v, date: r.TIME, name: r.ITEM_NAME1 };
   });
-  return latest;
+  return best;
 }
 
 // 미국 국채. FRED는 만기별 일별 시리즈를 준다.
