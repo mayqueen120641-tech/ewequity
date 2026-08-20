@@ -468,6 +468,42 @@
   .spread-neg{color:var(--down);font-weight:600;}
   .spread-pos{color:var(--text);}
 
+  /* 통화정책 */
+  .pol-card{
+    background:var(--hover);border:1px solid var(--panel-border);border-radius:11px;
+    padding:14px 15px;margin-bottom:14px;
+  }
+  .pol-card h4{margin:0 0 4px;font-size:13px;}
+  .pol-card .when{font-size:10.5px;color:var(--sub);margin-bottom:9px;}
+  .pol-card p{margin:0 0 9px;font-size:12.5px;line-height:1.7;}
+  .pol-changed{
+    border-left:2px solid var(--accent);padding:9px 11px;margin-top:10px;
+    font-size:12.5px;line-height:1.7;background:var(--panel);border-radius:0 8px 8px 0;
+  }
+  .pol-changed b{color:var(--accent);}
+  .pol-sec{margin-top:18px;}
+  .pol-sec > h3{font-size:13px;margin:0 0 9px;font-weight:600;}
+  .pol-topic{margin-bottom:16px;}
+  .pol-topic h4{font-size:12px;color:var(--accent);margin:0 0 6px;font-weight:600;}
+  .pol-topic a{
+    display:block;font-size:12.5px;color:var(--text);text-decoration:none;
+    padding:6px 0;border-bottom:1px solid var(--panel-border);line-height:1.5;
+  }
+  .pol-topic a:last-child{border-bottom:none;}
+  .pol-topic a:hover{color:var(--accent);}
+  .pol-topic .pd{font-size:10.5px;color:var(--sub);margin-left:6px;}
+  .pol-recent{display:flex;flex-wrap:wrap;gap:8px;}
+  .pol-recent a{
+    font-size:11.5px;color:var(--text);text-decoration:none;padding:7px 10px;
+    background:var(--hover);border:1px solid var(--panel-border);border-radius:8px;
+  }
+  .pol-recent a:hover{border-color:var(--accent);}
+  .pol-recent .kind{color:var(--accent);font-weight:600;margin-right:5px;}
+  .pol-terms{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:9px;}
+  .pol-term{background:var(--hover);border-radius:9px;padding:10px 12px;}
+  .pol-term b{display:block;font-size:12px;margin-bottom:4px;}
+  .pol-term span{font-size:11.5px;color:var(--sub);line-height:1.6;}
+
   /* ---------- 차트 분석 ---------- */
   .chart-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;}
   .chart-search{flex:1;min-width:220px;margin:0;}
@@ -982,9 +1018,13 @@
             <button data-cat="domestic">국내경제</button>
             <button data-cat="politics_domestic">국내정세</button>
             <button data-cat="politics_intl">국제정세</button>
+            <button data-cat="policy">통화정책</button>
           </div>
           <div class="news-list" id="newsList">
             <div class="loading">불러오는 중…</div>
+          </div>
+          <div id="policyWrap" style="display:none;">
+            <div id="policyBody"></div>
           </div>
         </section>
       </section>
@@ -2567,6 +2607,112 @@ function mockFinRank() {
   };
 }
 
+// ---------- 통화정책 ----------
+// FOMC 성명서는 단어 하나가 시장을 움직이는데 영어 원문이라 초보자는 읽지 못한다.
+// 원문을 한글로 풀고, **직전과 무엇이 달라졌는지**를 짚어주는 게 이 화면의 핵심이다.
+let policyCache = null;
+let policyReqSeq = 0;
+
+async function loadPolicy(force) {
+  const seq = ++policyReqSeq;
+  const el = document.getElementById('policyBody');
+  if (policyCache && !force) { renderPolicy(policyCache); return; }
+  el.innerHTML = '<div class="loading">불러오는 중…</div>';
+  try {
+    const d = isConfigured() ? await apiGet('policy', force ? { nocache: 1 } : {}) : mockPolicy();
+    if (seq !== policyReqSeq) return;
+    policyCache = d;
+  } catch (err) {
+    console.error(err);
+    if (seq !== policyReqSeq) return;
+    policyCache = { error: '통화정책 정보를 불러오지 못했어요.' };
+  }
+  renderPolicy(policyCache);
+}
+
+function renderPolicy(d) {
+  const el = document.getElementById('policyBody');
+  if (d.error) { el.innerHTML = '<div class="empty">' + esc_(d.error) + '</div>'; return; }
+  let html = '';
+
+  // ① FOMC 성명서 요약
+  const f = d.fomc;
+  if (f) {
+    html += '<div class="pol-card">' +
+      '<h4>미 연준 FOMC 성명서</h4>' +
+      '<div class="when">' + esc_(f.date || f.pubDate || '') + '</div>' +
+      '<p>' + esc_(f.summary) + '</p>' +
+      (f.changed
+        ? '<div class="pol-changed"><b>직전 성명서와 달라진 점</b><br>' + esc_(f.changed) + '</div>'
+        : '') +
+      ((f.terms || []).length
+        ? '<div class="pol-terms" style="margin-top:12px;">' + f.terms.map(function (t) {
+            return '<div class="pol-term"><b>' + esc_(t.word) + '</b><span>' + esc_(t.meaning) + '</span></div>';
+          }).join('') + '</div>'
+        : '') +
+      '<div class="ai-foot" style="margin-top:10px;">' +
+      '<a href="' + esc_(f.link) + '" target="_blank" rel="noopener">연준 원문 보기 ↗</a>' +
+      ' · AI가 영문 원문을 풀어 쓴 설명입니다. 앞으로의 금리 예측이 아닙니다.</div>' +
+      '</div>';
+  } else {
+    html += '<div class="pol-card"><h4>미 연준 FOMC 성명서</h4>' +
+      '<p style="color:var(--sub);">아직 준비되지 않았어요. Apps Script 편집기에서 ' +
+      '<b>setupTriggers()</b>를 한 번 실행하면 하루 안에 만들어집니다.</p></div>';
+  }
+
+  // ③ 최근 발표 이력 (앞으로의 일정은 지어내지 않는다)
+  if ((d.recent || []).length) {
+    html += '<div class="pol-sec"><h3>연준 최근 발표</h3><div class="pol-recent">' +
+      d.recent.map(function (r) {
+        return '<a href="' + esc_(r.link) + '" target="_blank" rel="noopener">' +
+          '<span class="kind">' + esc_(r.kind) + '</span>' + esc_(r.date || '') + '</a>';
+      }).join('') + '</div></div>';
+  }
+
+  // ② 주제별 뉴스
+  if ((d.topics || []).length) {
+    html += '<div class="pol-sec"><h3>주제별 뉴스</h3>' +
+      d.topics.map(function (t) {
+        if (!t.items.length) return '';
+        return '<div class="pol-topic"><h4>' + esc_(t.label) + '</h4>' +
+          t.items.slice(0, 5).map(function (it) {
+            return '<a href="' + esc_(it.link) + '" target="_blank" rel="noopener">' +
+              esc_(it.title) + '<span class="pd">' + esc_(fmtNewsDate(it.pubDate)) + '</span></a>';
+          }).join('') + '</div>';
+      }).join('') +
+      '<div class="fin-note">한국은행 보도자료는 자바스크립트로 그리는 페이지라 직접 가져올 수 없어서, ' +
+      '국내 정책은 <b>뉴스로 대신</b> 보여드립니다 — 원문이 아니라 기자가 정리한 내용입니다.</div></div>';
+  }
+
+  // ④ 용어 풀이
+  if ((d.terms || []).length) {
+    html += '<div class="pol-sec"><h3>알아두면 좋은 말</h3><div class="pol-terms">' +
+      d.terms.map(function (t) {
+        return '<div class="pol-term"><b>' + esc_(t.word) + '</b><span>' + esc_(t.meaning) + '</span></div>';
+      }).join('') + '</div></div>';
+  }
+  el.innerHTML = html;
+}
+
+function fmtNewsDate(s) {
+  const t = new Date(s);
+  if (isNaN(t.getTime())) return '';
+  return (t.getMonth() + 1) + '.' + t.getDate();
+}
+
+function mockPolicy() {
+  return {
+    fomc: { date: '2026-07-29', link: '#',
+      summary: '기준금리를 3.50~3.75%로 동결했습니다. (목업)',
+      changed: '지난 성명서에 있던 "추가 인상 가능성" 문구가 빠졌습니다. (목업)',
+      terms: [{ word: '연방기금금리', meaning: '미국 은행끼리 하루짜리 돈을 빌릴 때 쓰는 금리입니다.' }] },
+    recent: [{ title: 'x', link: '#', date: '2026-08-19', kind: '의사록' }],
+    topics: [{ key: 'cbdc', label: 'CBDC·디지털화폐',
+      items: [{ title: '목업 기사 제목', link: '#', pubDate: new Date().toISOString() }] }],
+    terms: [{ word: 'CBDC', meaning: '중앙은행이 직접 발행하는 디지털 화폐입니다.' }]
+  };
+}
+
 // ---------- 차트 분석 ----------
 // 초보자용이라 지표 이름을 늘어놓지 않는다. 캔들 + 거래량 + 평균선까지만 그리고,
 // 나머지는 "평소의 몇 배"처럼 문장으로 풀어준다.
@@ -3866,7 +4012,17 @@ document.querySelectorAll('#newsTags button').forEach(function (btn) {
     document.querySelectorAll('#newsTags button').forEach(function (b) { b.classList.remove('active'); });
     btn.classList.add('active');
     state.category = btn.dataset.cat;
-    renderNews(allNewsCache);
+    // 통화정책 탭은 뉴스 목록이 아니라 전용 화면을 그린다.
+    const isPolicy = btn.dataset.cat === 'policy';
+    document.getElementById('newsList').style.display = isPolicy ? 'none' : '';
+    document.getElementById('policyWrap').style.display = isPolicy ? '' : 'none';
+    if (isPolicy) {
+      document.getElementById('newsSort').style.display = 'none';
+      loadPolicy();
+    } else {
+      // renderNews가 중요도 점수 유무를 보고 정렬 토글 표시를 알아서 처리한다.
+      renderNews(allNewsCache);
+    }
   });
 });
 

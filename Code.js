@@ -89,6 +89,9 @@ function doGet(e) {
           noCache
         );
         break;
+      case 'policy':
+        result = getPolicy(noCache);
+        break;
       case 'earnhist':
         result = getEarningsHistory((e.parameter && e.parameter.symbol) || '', noCache);
         break;
@@ -362,7 +365,9 @@ function setupTriggers() {
     { name: 'refreshEcosCache', fn: refreshEcosCache, minutes: 30 },
     { name: 'refreshAiBriefing', fn: refreshAiBriefing, hours: 3 },
     { name: 'refreshDartCorpMap', fn: refreshDartCorpMap, weeks: 1 },
-    { name: 'refreshDartSnapshot', fn: refreshDartSnapshot, days: 1 }
+    { name: 'refreshDartSnapshot', fn: refreshDartSnapshot, days: 1 },
+    // FOMC 성명서는 연 8회만 나온다. 하루 한 번이면 충분하고, 같은 성명서면 AI를 안 부른다.
+    { name: 'refreshPolicyBrief', fn: refreshPolicyBrief, days: 1 }
   ];
   const names = jobs.map(function (j) { return j.name; });
 
@@ -4420,5 +4425,280 @@ function getUsFinance(symbol, noCache) {
     market: 'us'
   };
   cachePut_(cacheKey, data, US_METRIC_CACHE_SEC_);
+  return data;
+}
+
+// ================= 19. 통화정책 =================
+// FOMC 성명서는 **단어 하나 바뀌는 게 시장을 움직이는데** 영어 원문이라 초보자는 접근을 못 한다.
+// 원문을 가져와 한글로 풀고, **직전 성명서와 무엇이 달라졌는지**를 짚어주는 게 핵심이다.
+//
+// ⚠️ 연준 원문을 받아 AI로 요약하는 건 느리고 비싸다(성명서는 연 8회만 나온다).
+//    ECOS·브리핑과 같은 이유로 **트리거에서 만들어 저장**하고, 요청 경로는 저장값만 읽는다.
+
+var FED_RSS_ = 'https://www.federalreserve.gov/feeds/press_monetary.xml';
+var POLICY_BRIEF_PROP_ = 'POLICY_BRIEF_V1';
+var POLICY_NEWS_CACHE_SEC_ = 1800;
+
+function cdata_(s) {
+  return String(s || '').replace(/<!\[CDATA\[|\]\]>/g, '').trim();
+}
+
+// 연준 RSS에서 FOMC 성명서만 골라 최신순으로 준다(의사록·할인율 회의록은 제외).
+function parseFedFeed_(xml) {
+  const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+  return items.map(function (it) {
+    const t = it.match(/<title>([\s\S]*?)<\/title>/);
+    const l = it.match(/<link>([\s\S]*?)<\/link>/);
+    const d = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+    return {
+      title: cdata_(t && t[1]),
+      link: cdata_(l && l[1]),
+      pubDate: cdata_(d && d[1])
+    };
+  }).filter(function (x) { return x.link; });
+}
+
+function fedStatements_(feed) {
+  return feed.filter(function (x) { return /FOMC statement/i.test(x.title); });
+}
+
+// 82KB 페이지에서 성명서 본문만 뽑는다. id="article" 안의 긴 <p>만 남긴다.
+function fedStatementText_(html) {
+  const i = html.indexOf('id="article"');
+  const seg = i >= 0 ? html.slice(i, i + 30000) : html;
+  const ps = seg.match(/<p[^>]*>[\s\S]*?<\/p>/g) || [];
+  const out = [];
+  ps.forEach(function (p) {
+    const t = stripTags_(p).replace(/\s+/g, ' ').trim();
+    // 공유 링크·이메일 보호 스크립트가 <p>에 섞여 온다.
+    if (t.length > 60 && t.indexOf('email-protection') === -1) out.push(t);
+  });
+  return out.join('\n\n').slice(0, 6000);
+}
+
+var POLICY_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    summary: {
+      type: 'string',
+      description: '이번 FOMC 성명서 내용을 초보자에게 설명하는 한국어 3~4문장. ' +
+        '금리를 올렸는지 내렸는지 동결했는지, 경기와 물가를 어떻게 본다고 했는지. ' +
+        '주어진 원문에만 근거할 것.'
+    },
+    changed: {
+      type: 'string',
+      description: '직전 성명서와 비교해 **표현이 달라진 부분**을 한국어 2~3문장. ' +
+        'FOMC는 문구 하나로 신호를 주므로 이 비교가 핵심이다. ' +
+        '직전 성명서가 주어지지 않았으면 빈 문자열.'
+    },
+    terms: {
+      type: 'array',
+      description: '성명서에 나온 어려운 용어 2~3개 풀이.',
+      items: {
+        type: 'object',
+        properties: {
+          word: { type: 'string' },
+          meaning: { type: 'string', description: '한국어 한 문장 설명' }
+        },
+        required: ['word', 'meaning'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['summary', 'changed', 'terms'],
+  additionalProperties: false
+};
+
+function refreshPolicyBrief() {
+  const key = getProp_('ANTHROPIC_API_KEY');
+  if (!key) { Logger.log('refreshPolicyBrief: ANTHROPIC_API_KEY 없음 — 건너뜀'); return; }
+
+  var feed;
+  try {
+    feed = parseFedFeed_(UrlFetchApp.fetch(FED_RSS_,
+      { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true }).getContentText());
+  } catch (err) {
+    Logger.log('refreshPolicyBrief: RSS 실패 - ' + err);
+    return;
+  }
+  const stmts = fedStatements_(feed);
+  if (!stmts.length) { Logger.log('refreshPolicyBrief: 성명서 없음'); return; }
+
+  const stored = safe_(function () {
+    return JSON.parse(PropertiesService.getScriptProperties().getProperty(POLICY_BRIEF_PROP_));
+  });
+  // 같은 성명서면 다시 만들지 않는다(AI 호출 절약).
+  if (stored && stored.link === stmts[0].link) { Logger.log('refreshPolicyBrief: 변경 없음'); return; }
+
+  const body = safe_(function () {
+    return fedStatementText_(UrlFetchApp.fetch(stmts[0].link,
+      { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true }).getContentText());
+  });
+  if (!body) { Logger.log('refreshPolicyBrief: 본문 추출 실패'); return; }
+
+  const prevBody = stmts[1] ? safe_(function () {
+    return fedStatementText_(UrlFetchApp.fetch(stmts[1].link,
+      { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true }).getContentText());
+  }) : null;
+
+  const r = callClaudePolicy_(key, stmts[0], body, prevBody);
+  if (!r) { Logger.log('refreshPolicyBrief: AI 요약 실패'); return; }
+
+  // 최근 발표 이력도 같이 저장한다(요청 경로에서 RSS를 다시 부르지 않기 위해).
+  const recent = feed.slice(0, 6).map(function (f) {
+    return { title: f.title, link: f.link, date: rssDate_(f.pubDate), kind: fedKindLabel_(f.title) };
+  });
+  PropertiesService.getScriptProperties().setProperty(POLICY_BRIEF_PROP_, JSON.stringify({
+    title: stmts[0].title, link: stmts[0].link, pubDate: stmts[0].pubDate,
+    date: rssDate_(stmts[0].pubDate), recent: recent,
+    summary: r.summary, changed: r.changed || null, terms: r.terms || [],
+    prevLink: stmts[1] ? stmts[1].link : null,
+    at: new Date().toISOString()
+  }));
+  Logger.log('✅ 통화정책 브리핑 갱신: ' + stmts[0].pubDate);
+}
+
+function callClaudePolicy_(apiKey, meta, body, prevBody) {
+  const prompt =
+    '[이번 FOMC 성명서 — ' + meta.pubDate + ']\n' + body + '\n\n' +
+    (prevBody ? '[직전 성명서]\n' + prevBody + '\n\n' : '') +
+    'summary에는 이번 성명서 내용을 초보자에게 3~4문장으로 설명해줘. ' +
+    '금리를 어떻게 했는지, 경기와 물가를 어떻게 본다고 했는지.\n' +
+    (prevBody
+      ? 'changed에는 직전 성명서와 비교해 **표현이 달라진 부분**을 짚어줘. ' +
+        'FOMC는 문구 하나로 신호를 주기 때문에 이 비교가 가장 중요하다. ' +
+        '바뀐 문구를 구체적으로 인용하면서 그게 무슨 뜻인지 풀어줘.\n'
+      : 'changed는 빈 문자열로 둬.\n') +
+    'terms에는 성명서에 나온 어려운 용어 2~3개를 쉬운 말로 풀어줘.\n\n' +
+    '⚠️ 지킬 것:\n' +
+    '- 주어진 원문에만 근거해. 없는 내용을 지어내지 마.\n' +
+    '- **앞으로 금리가 어떻게 될지 예측하지 마.** "다음엔 내릴 것으로 보인다" 같은 말 금지.\n' +
+    '- 매수/매도 추천, 특정 자산이 오를/내릴 것이라는 말 금지.\n' +
+    '- 어려운 말은 괄호로 짧게 풀어줘.';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 2000,
+        output_config: { format: { type: 'json_schema', schema: POLICY_SCHEMA_ } },
+        system: '너는 초보 투자자에게 중앙은행 통화정책을 쉽게 풀어주는 도우미야. ' +
+          '원문에 있는 내용만 설명하고, 앞으로의 예측이나 투자 권유는 하지 않는다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) { return null; }
+  if (res.getResponseCode() >= 400) {
+    console.log('callClaudePolicy_: HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 200));
+    return null;
+  }
+  const json = JSON.parse(res.getContentText());
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
+  const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!tb) return null;
+  try { return JSON.parse(tb.text); } catch (err) { return null; }
+}
+
+// ---- 주제별 정책 뉴스 ----
+// 한국은행 보도자료는 JS로 그리는 페이지라 직접 못 긁는다. 뉴스로 대신한다.
+// ⚠️ 즉 원문이 아니라 기자가 걸러낸 내용이다 — 화면에서 이 점을 밝힌다.
+var POLICY_TOPICS_ = [
+  { key: 'cbdc', label: 'CBDC·디지털화폐', query: 'CBDC 중앙은행 디지털화폐' },
+  { key: 'stable', label: '스테이블코인·디지털자산', query: '스테이블코인 규제' },
+  { key: 'rate', label: '금리·통화정책', query: '기준금리 금융통화위원회' },
+  { key: 'global', label: '해외 중앙은행', query: '연준 FOMC 통화정책' }
+];
+
+function policyNews_() {
+  const headers = {
+    'X-Naver-Client-Id': getProp_('NAVER_CLIENT_ID'),
+    'X-Naver-Client-Secret': getProp_('NAVER_CLIENT_SECRET')
+  };
+  const jobs = POLICY_TOPICS_.map(function (t) {
+    return {
+      name: t.key,
+      url: 'https://openapi.naver.com/v1/search/news.json?query=' + encodeURIComponent(t.query) +
+        '&display=8&sort=date',
+      headers: headers
+    };
+  });
+  const responses = fetchJobsSafe_(jobs);
+  const out = [];
+  POLICY_TOPICS_.forEach(function (t, i) {
+    var items = [];
+    try {
+      const res = responses[i];
+      if (res && res.getResponseCode() < 400) {
+        items = (JSON.parse(res.getContentText()).items || []).map(function (it) {
+          return {
+            title: stripTags_(it.title),
+            description: stripTags_(it.description).slice(0, 140),
+            link: it.link,
+            pubDate: it.pubDate
+          };
+        });
+      }
+    } catch (err) {
+      console.log('policyNews_: ' + t.key + ' 실패 - ' + err);
+    }
+    out.push({ key: t.key, label: t.label, items: items });
+  });
+  return out;
+}
+
+// ---- 용어 풀이 ----
+// 정의가 잘 바뀌지 않는 말들이라 AI를 부르지 않는다(비용 0, 항상 같은 설명).
+var POLICY_TERMS_ = [
+  { word: 'CBDC', meaning: '중앙은행이 직접 발행하는 디지털 화폐. 지금의 은행 예금이나 카드와 달리 중앙은행에 대한 직접적인 청구권이라, 현금을 디지털로 옮긴 것에 가깝습니다.' },
+  { word: '스테이블코인', meaning: '달러 같은 자산에 가치를 고정시킨 코인. 비트코인처럼 가격이 출렁이지 않게 만든 것이라 결제·송금 용도로 주로 쓰입니다.' },
+  { word: '기준금리', meaning: '중앙은행이 정하는 금리의 기준점. 이걸 올리면 예금·대출 금리가 따라 올라 시중에 도는 돈이 줄어듭니다.' },
+  { word: '금통위', meaning: '한국은행 금융통화위원회. 우리나라 기준금리를 결정하는 회의로 연 8회 열립니다.' },
+  { word: 'FOMC', meaning: '미국 연방공개시장위원회. 미국 기준금리를 정하는 회의로 연 8회 열리며, 결과가 전 세계 금리와 환율에 영향을 줍니다.' },
+  { word: '양적긴축(QT)', meaning: '중앙은행이 사들였던 채권을 줄여 시중의 돈을 거둬들이는 것. 양적완화(QE)의 반대입니다.' },
+  { word: '매파 / 비둘기파', meaning: '매파는 물가를 잡으려 금리를 올리자는 쪽, 비둘기파는 경기를 살리려 금리를 낮추자는 쪽을 가리킵니다.' },
+  { word: '점도표', meaning: 'FOMC 위원들이 각자 예상하는 향후 금리 수준을 점으로 찍은 표. 위원들의 생각을 엿볼 수 있어 시장이 주목합니다.' }
+];
+
+// ---- 최근 통화정책 발표 ----
+// 처음에는 캘린더에서 FOMC 일정을 뽑으려 했지만, FRED 발표 일정에는 **경제지표만 있고
+// FOMC 회의 날짜가 없다**(실측). 앞으로의 회의 날짜를 지어낼 수는 없으므로,
+// 연준 RSS에 실제로 올라온 **지나간 발표 이력**을 보여준다.
+var FED_KIND_ = [
+  { re: /FOMC statement/i, label: '금리 결정' },
+  { re: /Minutes of the Federal Open Market/i, label: '의사록' },
+  { re: /discount rate/i, label: '할인율 회의록' }
+];
+
+function fedKindLabel_(title) {
+  for (var i = 0; i < FED_KIND_.length; i++) {
+    if (FED_KIND_[i].re.test(title)) return FED_KIND_[i].label;
+  }
+  return '보도자료';
+}
+
+// "Wed, 19 Aug 2026 18:00:00 GMT" → "2026-08-19"
+function rssDate_(s) {
+  const t = new Date(s);
+  return isNaN(t.getTime()) ? null : Utilities.formatDate(t, 'Asia/Seoul', 'yyyy-MM-dd');
+}
+
+function getPolicy(noCache) {
+  const cached = noCache ? null : cacheGet_('policy');
+  if (cached) return cached;
+
+  const brief = safe_(function () {
+    return JSON.parse(PropertiesService.getScriptProperties().getProperty(POLICY_BRIEF_PROP_));
+  });
+
+  const data = {
+    fomc: brief || null,
+    recent: (brief && brief.recent) || [],
+    topics: policyNews_(),
+    terms: POLICY_TERMS_
+  };
+  cachePut_('policy', data, POLICY_NEWS_CACHE_SEC_);
   return data;
 }
