@@ -1098,6 +1098,26 @@
           </div>
         </div>
         <section class="panel">
+          <div class="chart-bar">
+            <div class="search-box chart-search">
+              <input id="earnInput" type="text" placeholder="해외 종목 티커로 지난 실적 검색 (예: AAPL, NVDA)">
+              <button id="earnBtn">조회</button>
+            </div>
+          </div>
+          <div id="earnHistWrap" style="display:none;margin-bottom:16px;">
+            <div id="earnHistHead" class="chart-name"></div>
+            <div class="rank-wrap">
+              <table class="rank">
+                <thead><tr>
+                  <th>발표일</th><th>분기</th>
+                  <th class="c-metric">예상 EPS</th><th class="c-metric">실제 EPS</th>
+                  <th class="c-metric">예상 대비</th>
+                </tr></thead>
+                <tbody id="earnHistBody"></tbody>
+              </table>
+            </div>
+            <div class="fin-note" id="earnHistNote"></div>
+          </div>
           <div class="rank-head">
             <h2>일정 <span class="watch-count" id="earnBasis"></span></h2>
             <div class="rank-tabs" id="earnTabs">
@@ -1133,6 +1153,12 @@
           </div>
         </div>
         <section class="panel">
+          <div class="chart-bar">
+            <div class="search-box chart-search">
+              <input id="finInput" type="text" placeholder="종목 검색 — 국내(삼성전자) · 해외(AAPL) 모두 가능">
+              <button id="finBtn">조회</button>
+            </div>
+          </div>
           <div class="rank-head">
             <h2>기업가치 지표 <span class="watch-count" id="finBasis"></span></h2>
             <div class="rank-tabs" id="finTabs">
@@ -3121,6 +3147,84 @@ document.getElementById('earnBody').addEventListener('click', function (ev) {
   openEarn(tr.dataset.market, tr.dataset.key, tr.dataset.date);
 });
 
+// ---- 지난 실적 검색 (해외) ----
+// 지금까지는 캘린더에 걸린 일정(이번 달~다음 달)만 볼 수 있었다. 티커로 검색하면
+// 지난 분기 실적까지 거슬러 볼 수 있게 한다.
+let earnHistSeq = 0;
+
+async function loadEarnHist(symbol) {
+  const q = String(symbol || '').trim();
+  if (!q) return;
+  const seq = ++earnHistSeq;
+  const wrap = document.getElementById('earnHistWrap');
+  const body = document.getElementById('earnHistBody');
+  const head = document.getElementById('earnHistHead');
+  const note = document.getElementById('earnHistNote');
+  wrap.style.display = '';
+  head.textContent = q.toUpperCase();
+  body.innerHTML = '<tr><td colspan="5" class="rank-empty">불러오는 중…</td></tr>';
+  note.textContent = '';
+
+  let d;
+  try {
+    d = isConfigured() ? await apiGet('earnhist', { symbol: q }) : mockEarnHist();
+  } catch (err) {
+    console.error(err);
+    d = { error: '실적 기록을 불러오지 못했어요.' };
+  }
+  if (seq !== earnHistSeq) return;
+  if (d.error) {
+    body.innerHTML = '<tr><td colspan="5" class="rank-empty">' + esc_(d.error) + '</td></tr>';
+    return;
+  }
+
+  head.innerHTML = esc_(d.symbol) +
+    '<span class="sub">발표 완료 ' + d.total + '분기 · 예상 상회 ' + d.beats + ' / 하회 ' + d.misses + '</span>';
+
+  body.innerHTML = (d.rows || []).map(function (r) {
+    const su = r.epsSurprise;
+    const suTxt = (su === null || su === undefined) ? '<span class="ev-badge">예정</span>'
+      : '<span class="surprise ' + (su >= 0 ? 'pos' : 'neg') + '">' +
+        (su > 0 ? '+' : '') + fmtNum(su, 1) + '%</span>';
+    return '<tr><td>' + r.date + '</td>' +
+      '<td>' + (r.year && r.quarter ? r.year + ' Q' + r.quarter : '–') + '</td>' +
+      '<td class="c-metric">' + fmtEps(r.epsEst) + '</td>' +
+      '<td class="c-metric">' + fmtEps(r.epsAct) + '</td>' +
+      '<td class="c-metric">' + suTxt + '</td></tr>';
+  }).join('');
+
+  // 한 분기만 보면 알 수 없는 흐름을 짚어준다. 다만 앞으로를 예측하지는 않는다.
+  note.innerHTML = '<b>예상 대비</b>는 증권사 예측 대비 실제가 몇 % 높거나 낮았는지입니다. ' +
+    (d.total >= 2
+      ? '최근 ' + d.total + '개 분기 중 <b>' + d.beats + '번</b> 예상을 넘겼습니다. ' +
+        '다만 과거에 자주 넘겼다고 다음에도 넘긴다는 뜻은 아닙니다. '
+      : '') +
+    '무료 데이터라 <b>최근 4개 분기 안팎</b>까지만 제공됩니다. 국내 종목은 증권사 예상치가 공개되지 않아 검색되지 않습니다.';
+}
+
+function mockEarnHist() {
+  return { symbol: 'MOCK', total: 4, beats: 3, misses: 1, rows: [
+    { date: '2026-07-30', year: 2026, quarter: 3, epsEst: 1.93, epsAct: 1.91, epsSurprise: -0.9 },
+    { date: '2026-03-31', year: 2026, quarter: 2, epsEst: 1.99, epsAct: 2.01, epsSurprise: 1.1 }
+  ] };
+}
+
+document.getElementById('earnBtn').addEventListener('click', function () {
+  loadEarnHist(document.getElementById('earnInput').value);
+});
+document.getElementById('earnInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') loadEarnHist(this.value);
+});
+
+// 재무 분석 — 국내/해외 아무 종목이나 검색해서 바로 상세를 연다
+document.getElementById('finBtn').addEventListener('click', function () {
+  const q = document.getElementById('finInput').value.trim();
+  if (q) openFin(q, q);
+});
+document.getElementById('finInput').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && this.value.trim()) openFin(this.value.trim(), this.value.trim());
+});
+
 // ---- 실적 상세 모달 ----
 const earnBack = document.getElementById('earnBack');
 let earnDetSeq = 0;
@@ -3307,7 +3411,13 @@ async function loadFin(code, name) {
     const d = isConfigured() ? await apiGet('finance', { symbol: code }) : mockFin();
     if (d.error) { sub.textContent = ''; detail.innerHTML = '<div class="empty">' + esc_(d.error) + '</div>'; return; }
 
-    sub.textContent = d.year + '년 사업보고서 기준 · 시가총액 ' + fmtCap(d.marketCap);
+    // 국내는 DART 사업보고서, 해외는 Finnhub TTM — 기준이 다르니 그대로 밝힌다.
+    const isUs = d.market === 'us';
+    document.getElementById('finTitle').textContent = (d.name || name) + ' — 재무';
+    sub.textContent = isUs
+      ? '최근 12개월(TTM) 기준' + (d.industry ? ' · ' + d.industry : '') +
+        (d.marketCapUsd ? ' · 시가총액 ' + fmtUsd(d.marketCapUsd) : '')
+      : d.year + '년 사업보고서 기준 · 시가총액 ' + fmtCap(d.marketCap);
 
     let html = valChips(d.valuation || {});
 
@@ -3321,11 +3431,22 @@ async function loadFin(code, name) {
         }).join('') +
         '</div><div id="finTrend"></div></div>';
     }
+    const ex = d.extra;
+    if (isUs && ex) {
+      const bit = function (k, v, suf) {
+        return (v === null || v === undefined) ? '' :
+          '<div class="val-item"><div class="k">' + k + '</div><div class="v">' +
+          fmtNum(v, 2) + (suf || '') + '</div></div>';
+      };
+      const more = bit('매출성장률', ex.revGrowth, '%') + bit('매출총이익률', ex.grossMargin, '%') +
+        bit('배당수익률', ex.divYield, '%') + bit('52주 최고', ex.high52) + bit('52주 최저', ex.low52);
+      if (more) html += '<div class="val-grid" style="margin-top:10px;">' + more + '</div>';
+    }
     html += '<div class="fin-ai" id="finAi"><h4>숫자 풀어보기</h4>' +
       '<div class="empty">해설을 만드는 중…</div></div>';
     detail.innerHTML = html;
     renderTrend();
-    loadFinAi(code);
+    loadFinAi(d.symbol || d.code || code);
 
     const tabs = document.getElementById('finTrendTabs');
     if (tabs) {

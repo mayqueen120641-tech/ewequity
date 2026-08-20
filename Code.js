@@ -47,9 +47,14 @@ function doGet(e) {
       case 'briefing':
         result = getBriefing();
         break;
-      case 'finance':
-        result = getFinance((e.parameter && e.parameter.symbol) || '', noCache);
+      case 'finance': {
+        // 국내는 DART, 해외는 Finnhub — 같은 화면에서 둘 다 되게 심볼로 갈라준다.
+        const finSym = (e.parameter && e.parameter.symbol) || '';
+        result = krCode_(finSym)
+          ? getFinance(finSym, noCache)
+          : getUsFinance(finSym, noCache);
         break;
+      }
       case 'finrank':
         result = getFinRank((e.parameter && e.parameter.sort) || 'per');
         break;
@@ -83,6 +88,9 @@ function doGet(e) {
           (e.parameter && e.parameter.range) || '3M',
           noCache
         );
+        break;
+      case 'earnhist':
+        result = getEarningsHistory((e.parameter && e.parameter.symbol) || '', noCache);
         break;
       case 'earndetail':
         result = getEarningsDetail(
@@ -2803,24 +2811,27 @@ function dartMedians_(snap) {
 var FIN_AI_CACHE_SEC_ = 21600; // 6시간
 
 function getFinAi(symbol, noCache) {
-  const code = krCode_(symbol);
-  if (!code) return { error: '국내 종목만 해설할 수 있어요.' };
+  const code = krCode_(symbol) || String(symbol || '').trim().toUpperCase();
+  if (!code) return { error: '종목 코드가 없습니다.' };
 
   const key = getProp_('ANTHROPIC_API_KEY');
   if (!key) return { error: 'AI 해설은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
 
-  const fin = getFinance(code, noCache);
+  const fin = krCode_(code) ? getFinance(code, noCache) : getUsFinance(code, noCache);
   if (!fin || fin.error) return { error: (fin && fin.error) || '재무 데이터를 찾지 못했어요.' };
 
   const v = fin.valuation || {};
   // 주가가 움직이면 PER·PBR도 같이 움직인다. 캐시 키에 수치를 넣어두면 값이 의미 있게
   // 바뀐 순간 자동으로 다시 만들어진다 — 시간만으로 만료시키면 옛날 숫자를 설명하게 된다.
-  const stamp = [fin.year, v.per, v.pbr, v.roe].join('|');
+  const stamp = [fin.year || 'ttm', v.per, v.pbr, v.roe].join('|');
   const cacheKey = 'finai_' + code + '_' + md5_(stamp);
   const cached = noCache ? null : cacheGet_(cacheKey);
   if (cached) return cached;
 
-  const snap = readDartSnapshot_();
+  // ⚠️ 중앙값은 **국내 상위 100종목** 기준이다. 미국 종목을 여기에 대면
+  // "코스피 중앙값보다 높다"는 엉뚱한 비교가 나온다. 해외는 중앙값을 넘기지 않는다.
+  const isUs = fin.market === 'us';
+  const snap = isUs ? null : readDartSnapshot_();
   const medians = snap ? dartMedians_(snap) : null;
 
   const result = callClaudeFinAi_(key, fin, medians);
@@ -2874,8 +2885,11 @@ function callClaudeFinAi_(apiKey, fin, medians) {
     trendLines.push(p.year + '년 ' + jo(p.value));
   });
 
+  const basis = fin.market === 'us'
+    ? '[' + (fin.name || fin.symbol) + ' — 최근 12개월(TTM) 기준, 미국 상장]'
+    : '[' + (fin.name || fin.code) + ' — ' + fin.year + '년 사업보고서(DART) 기준]';
   const prompt =
-    '[' + (fin.name || fin.code) + ' — ' + fin.year + '년 사업보고서(DART) 기준]\n' +
+    basis + '\n' +
     lines.join('\n') + '\n\n' +
     (finLines.length ? '[실적]\n' + finLines.join('\n') + '\n\n' : '') +
     (trendLines.length ? '[영업이익 추이] ' + trendLines.join(' → ') + '\n\n' : '') +
@@ -4216,4 +4230,195 @@ function sameFreshness_(a, b) {
   const da = toDateObj_(a && a.date), db = toDateObj_(b && b.date);
   if (!da || !db) return false;
   return Math.abs(da.getTime() - db.getTime()) <= SPREAD_MAX_GAP_DAYS_ * 86400000;
+}
+
+// ================= 17. 종목별 실적 히스토리 =================
+// 지금까지는 캘린더에 걸린 일정(이번 달~다음 달)만 눌러볼 수 있었다.
+// 종목을 검색해 **지난 실적까지** 거슬러 볼 수 있게 한다.
+
+var EARN_HIST_QUARTERS_ = 12;   // 최대 3년치
+var EARN_HIST_CACHE_SEC_ = 21600;
+
+function finnhubEarningsSymbolUrl_(apiKey, symbol, from, to) {
+  return 'https://finnhub.io/api/v1/calendar/earnings?symbol=' + encodeURIComponent(symbol) +
+    '&from=' + from + '&to=' + to + '&token=' + apiKey;
+}
+
+// Finnhub 원본 → 우리 필드명. parseMajorEarnings_가 하던 매핑과 같은 일을 한다.
+function normalizeFinnhubEarning_(e) {
+  return {
+    date: e.date, symbol: e.symbol, hour: e.hour || '',
+    quarter: e.quarter || null, year: e.year || null,
+    epsEst: e.epsEstimate === undefined ? null : e.epsEstimate,
+    epsAct: e.epsActual === undefined ? null : e.epsActual,
+    revEst: e.revenueEstimate === undefined ? null : e.revenueEstimate,
+    revAct: e.revenueActual === undefined ? null : e.revenueActual
+  };
+}
+
+function getEarningsHistory(symbol, noCache) {
+  const raw = String(symbol || '').trim().toUpperCase();
+  if (!raw || raw.length > 20) return { error: '종목 코드를 입력해주세요.' };
+  // 해외 종목만 예상치(컨센서스)가 공개된다. 국내는 Finnhub가 커버하지 않는다.
+  if (/\d{6}/.test(raw)) {
+    return { error: '국내 종목은 증권사 예상치가 공개되지 않아 실적 히스토리를 만들 수 없어요. 해외 종목(예: AAPL)으로 검색해주세요.' };
+  }
+
+  const cacheKey = 'earnhist_' + raw;
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const key = PropertiesService.getScriptProperties().getProperty('FINNHUB_API_KEY');
+  if (!key) return { error: 'FINNHUB_API_KEY가 설정되지 않았어요.' };
+
+  const now = new Date();
+  const to = ymd_(new Date(now.getFullYear(), now.getMonth() + 2, 0));
+  const from = ymd_(new Date(now.getFullYear() - 3, now.getMonth(), 1));
+
+  // 캘린더 엔드포인트는 기간을 넓게 잡아도 과거를 거의 주지 않는다(실측: AAPL 1분기).
+  // 과거 실적은 전용 엔드포인트가 따로 있다.
+  const hist = safe_(function () {
+    return fetchJson_('https://finnhub.io/api/v1/stock/earnings?symbol=' +
+      encodeURIComponent(raw) + '&token=' + key);
+  }) || [];
+  // 캘린더는 **다가올** 발표와 매출 예상치를 갖고 있어 같이 쓴다.
+  const cal = safe_(function () {
+    return fetchJson_(finnhubEarningsSymbolUrl_(key, raw, from, to));
+  }) || {};
+
+  // ⚠️ 두 엔드포인트의 날짜 의미가 다르다.
+  //   전용(stock/earnings): period = **분기 말일**(2026-06-30)
+  //   캘린더(calendar/earnings): date = **발표일**(2026-07-30)
+  // 날짜로 합치면 같은 분기가 두 줄로 나온다(실측: AAPL·TSLA에서 발생).
+  // 그래서 **연도+분기**를 키로 쓰고, 화면에는 사용자가 아는 발표일을 보여준다.
+  const byQ = {};
+  const qKey = function (r) {
+    return (r.year && r.quarter) ? (r.year + 'Q' + r.quarter) : ('d' + r.date);
+  };
+
+  hist.forEach(function (h) {
+    if (!h.period) return;
+    const r = earningsRow_({
+      date: h.period, symbol: raw, hour: '',
+      quarter: h.quarter || null, year: h.year || null,
+      epsEst: h.estimate === undefined ? null : h.estimate,
+      epsAct: h.actual === undefined ? null : h.actual,
+      revEst: null, revAct: null
+    });
+    r.periodEnd = h.period;   // 분기 말일은 따로 보관
+    byQ[qKey(r)] = r;
+  });
+
+  ((cal.earningsCalendar) || []).forEach(function (e) {
+    const r = earningsRow_(normalizeFinnhubEarning_(e));
+    const k = qKey(r);
+    const prev = byQ[k];
+    if (!prev) { byQ[k] = r; return; }
+    // 발표일·발표시각·매출은 캘린더 쪽이 정확하고, 실적 수치는 있는 쪽을 남긴다.
+    prev.date = r.date;
+    prev.when = r.when || prev.when;
+    if (r.revEst !== null) prev.revEst = r.revEst;
+    if (r.revAct !== null) prev.revAct = r.revAct;
+    if (prev.epsAct === null && r.epsAct !== null) {
+      prev.epsAct = r.epsAct;
+      prev.epsSurprise = surprisePct_(prev.epsEst, r.epsAct);
+      prev.done = true;
+    }
+  });
+  const rows = Object.keys(byQ).map(function (k) { return byQ[k]; });
+  if (!rows.length) return { error: '"' + raw + '"의 실적 기록을 찾지 못했어요. 티커가 맞는지 확인해주세요.' };
+
+  const sorted = rows.sort(function (a, b) { return a.date > b.date ? -1 : 1; }).slice(0, EARN_HIST_QUARTERS_);
+  const done = sorted.filter(function (r) { return r.done; });
+
+  // 예상을 넘긴 분기가 몇 번인지 — 한 분기만 보면 알 수 없는 흐름이 보인다.
+  const beats = done.filter(function (r) { return r.epsSurprise !== null && r.epsSurprise > 0; }).length;
+
+  const data = {
+    symbol: raw,
+    rows: sorted,
+    total: done.length,
+    beats: beats,
+    misses: done.filter(function (r) { return r.epsSurprise !== null && r.epsSurprise < 0; }).length
+  };
+  cachePut_(cacheKey, data, EARN_HIST_CACHE_SEC_);
+  return data;
+}
+
+// ================= 18. 해외 종목 재무지표 =================
+// 재무 분석은 DART 기반이라 **국내 전용**이었다. 미국 종목을 검색하면 아무것도 안 나왔다.
+// Finnhub의 기본 재무지표로 같은 화면을 채운다.
+
+var US_METRIC_CACHE_SEC_ = 43200;
+
+// Finnhub metric 키는 이름이 제각각이라(peTTM / peBasicExclExtraTTM ...) 후보를 순서대로 본다.
+function pickMetric_(m, keys) {
+  for (var i = 0; i < keys.length; i++) {
+    const v = m[keys[i]];
+    if (v !== null && v !== undefined && isFinite(v)) return Math.round(v * 100) / 100;
+  }
+  return null;
+}
+
+function getUsFinance(symbol, noCache) {
+  const sym = String(symbol || '').trim().toUpperCase();
+  if (!sym || sym.length > 20) return { error: '종목 코드를 입력해주세요.' };
+
+  const cacheKey = 'usfin_' + sym;
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const key = PropertiesService.getScriptProperties().getProperty('FINNHUB_API_KEY');
+  if (!key) return { error: 'FINNHUB_API_KEY가 설정되지 않았어요.' };
+
+  var json, profile;
+  try {
+    json = fetchJson_('https://finnhub.io/api/v1/stock/metric?symbol=' +
+      encodeURIComponent(sym) + '&metric=all&token=' + key);
+  } catch (err) {
+    return { error: '재무 지표를 불러오지 못했어요.' };
+  }
+  const m = (json && json.metric) || {};
+  if (!Object.keys(m).length) return { error: '"' + sym + '"의 재무 지표를 찾지 못했어요.' };
+
+  profile = safe_(function () {
+    return fetchJson_('https://finnhub.io/api/v1/stock/profile2?symbol=' +
+      encodeURIComponent(sym) + '&token=' + key);
+  }) || {};
+
+  const data = {
+    symbol: sym,
+    name: profile.name || sym,
+    currency: profile.currency || 'USD',
+    industry: profile.finnhubIndustry || null,
+    // 시가총액은 백만 달러 단위로 온다.
+    marketCapUsd: profile.marketCapitalization ? profile.marketCapitalization * 1e6 : null,
+    valuation: {
+      per: pickMetric_(m, ['peTTM', 'peBasicExclExtraTTM', 'peExclExtraTTM']),
+      pbr: pickMetric_(m, ['pbQuarterly', 'pbAnnual', 'ptbvQuarterly']),
+      roe: pickMetric_(m, ['roeTTM', 'roeRfy', 'roaeTTM']),
+      opMargin: pickMetric_(m, ['operatingMarginTTM', 'operatingMarginAnnual']),
+      // ⚠️ 단위가 다르다. Finnhub totalDebt/totalEquity는 **비율**(0.78 = 78%)인데
+      // 국내(DART) 계산은 **퍼센트**(29.9 = 29.9%)다. 변환하지 않으면 애플 부채비율이
+      // "0.78%"로 찍혀 빚이 거의 없는 회사처럼 보인다 — 숫자가 그럴듯해서 못 알아챈다.
+      debtRatio: (function () {
+        const d = pickMetric_(m, ['totalDebt/totalEquityQuarterly', 'totalDebt/totalEquityAnnual']);
+        return d === null ? null : Math.round(d * 100 * 10) / 10;
+      })(),
+      loss: (function () {
+        const eps = pickMetric_(m, ['epsTTM', 'epsBasicExclExtraItemsTTM']);
+        return eps !== null && eps <= 0;
+      })()
+    },
+    extra: {
+      high52: pickMetric_(m, ['52WeekHigh']),
+      low52: pickMetric_(m, ['52WeekLow']),
+      divYield: pickMetric_(m, ['currentDividendYieldTTM', 'dividendYieldIndicatedAnnual']),
+      revGrowth: pickMetric_(m, ['revenueGrowthTTMYoy', 'revenueGrowthQuarterlyYoy']),
+      grossMargin: pickMetric_(m, ['grossMarginTTM', 'grossMarginAnnual'])
+    },
+    market: 'us'
+  };
+  cachePut_(cacheKey, data, US_METRIC_CACHE_SEC_);
+  return data;
 }
