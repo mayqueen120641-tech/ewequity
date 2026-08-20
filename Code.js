@@ -228,6 +228,12 @@ function fetchRatesParallel_() {
     { name: 'gold', url: yahooChartUrl_('GC=F'), parse: parseYahooQuote_ },
     { name: 'btc', url: yahooChartUrl_('BTC-USD'), parse: parseYahooQuote_ }
   ].concat(bondJobs_(fredKey));
+  jobs.push({
+    name: 'kr3yNaver',
+    url: NAVER_BOND3Y_URL_,
+    headers: { 'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'] },
+    parse: null   // EUC-KR이라 아래에서 따로 처리한다
+  });
 
   const toFetch = jobs.filter(function (j) { return !j.error; });
   const responses = fetchJobsSafe_(toFetch);
@@ -242,7 +248,10 @@ function fetchRatesParallel_() {
       if (!res) throw new Error('요청 실패(연결 오류): ' + j.url);
       const code = res.getResponseCode();
       if (code >= 400) throw new Error('요청 실패(' + code + '): ' + j.url);
-      results[j.name] = j.parse(JSON.parse(res.getContentText()));
+      // 네이버 국고채 페이지는 JSON이 아니라 EUC-KR HTML이다.
+      results[j.name] = j.parse
+        ? j.parse(JSON.parse(res.getContentText()))
+        : parseNaverBond_(res.getContentText('EUC-KR'));
     } catch (err) {
       results[j.name] = { error: String(err) };
     }
@@ -264,16 +273,20 @@ function fetchRatesParallel_() {
   const usdkrw = ecos.usdkrw || results.usdkrw_fallback;
 
   // 국고채는 ECOS 트리거가 받아둔 값을 쓴다(요청 경로에서 ECOS를 부르면 안 된다).
+  // ECOS(일별)를 우선 쓰고, 실패했으면 FRED 월간값으로라도 채운다.
   const bonds = {
-    kr3y: ecos.bond_kr3y || null,
-    kr10y: ecos.bond_kr10y || null,
+    kr3y: ecos.bond_kr3y || results.kr3yNaver || null,
+    kr10y: ecos.bond_kr10y || results.kr10yFallback || null,
     us3y: results.us3y || null,
     us10y: results.us10y || null,
     jp10y: results.jp10y || null
   };
   // 장단기 금리차 — 화면에서 다시 계산하지 않도록 여기서 한 번만 만든다.
-  bonds.krSpread = yieldSpread_(bonds.kr3y, bonds.kr10y);
-  bonds.usSpread = yieldSpread_(bonds.us3y, bonds.us10y);
+  // 날짜가 크게 벌어진 두 값의 차이는 숫자만 그럴듯하고 의미가 없다.
+  bonds.krSpread = sameFreshness_(bonds.kr3y, bonds.kr10y)
+    ? yieldSpread_(bonds.kr3y, bonds.kr10y) : null;
+  bonds.usSpread = sameFreshness_(bonds.us3y, bonds.us10y)
+    ? yieldSpread_(bonds.us3y, bonds.us10y) : null;
 
   return {
     base_rate_kr: baseRateKr,
@@ -4148,8 +4161,11 @@ var FRED_BOND_ = [
   { key: 'us10y', series: 'DGS10', label: '미국 10년' }
 ];
 // 일본은 OECD 월간 자료뿐이다. 일별이 없다는 걸 화면에서 밝힌다.
+// 한국 10년물도 월간으로 하나 더 받아둔다 — ECOS(일별)가 실패했을 때 빈 칸 대신 쓸
+// 폴백이다. 오래된 값이라는 건 화면의 "N개월 전" 표시가 알려준다.
 var FRED_BOND_MONTHLY_ = [
-  { key: 'jp10y', series: 'IRLTLT01JPM156N', label: '일본 10년' }
+  { key: 'jp10y', series: 'IRLTLT01JPM156N', label: '일본 10년' },
+  { key: 'kr10yFallback', series: 'IRLTLT01KRM156N', label: '한국 10년(월간)' }
 ];
 
 function bondJobs_(fredKey) {
@@ -4165,4 +4181,39 @@ function yieldSpread_(short, long) {
   if (!short || !long || short.error || long.error) return null;
   if (short.value === null || long.value === null) return null;
   return Math.round((long.value - short.value) * 100) / 100;
+}
+
+// ---- 국고채 3년: 네이버 금융 ----
+// ECOS(일별)가 GAS에서 국고채만 응답하지 않아 대체 경로를 둔다. 네이버 시가총액 페이지를
+// 이미 안정적으로 긁고 있어 같은 방식이 통한다.
+// ⚠️ 네이버에는 **국고채 3년만** 있다(10년물 없음). 페이지의 "10년"은 차트 기간 버튼이다.
+var NAVER_BOND3Y_URL_ =
+  'https://finance.naver.com/marketindex/interestDailyQuote.naver?marketindexCd=IRR_GOVT03Y';
+
+// 일별 시세 표의 첫 행이 최신이다.
+//   <td class="date"> 2026.08.20 </td><td class="num">3.81</td>
+function parseNaverBond_(html) {
+  const m = html.match(
+    /<td[^>]*class="date"[^>]*>\s*(\d{4})\.(\d{2})\.(\d{2})\s*<\/td>\s*<td[^>]*class="num"[^>]*>\s*([\d.]+)\s*<\/td>/);
+  if (!m) return null;
+  const v = parseFloat(m[4]);
+  if (isNaN(v)) return null;
+  return { value: v, date: m[1] + m[2] + m[3] };
+}
+
+// 두 금리의 날짜가 크게 다르면 차이를 계산하면 안 된다.
+// 오늘자 3년물과 두 달 전 10년물을 빼면 숫자는 나오지만 **아무 의미가 없다.**
+var SPREAD_MAX_GAP_DAYS_ = 7;
+
+function toDateObj_(d) {
+  const t = String(d || '');
+  if (/^\d{8}$/.test(t)) return new Date(+t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6));
+  const p = new Date(t);
+  return isNaN(p.getTime()) ? null : p;
+}
+
+function sameFreshness_(a, b) {
+  const da = toDateObj_(a && a.date), db = toDateObj_(b && b.date);
+  if (!da || !db) return false;
+  return Math.abs(da.getTime() - db.getTime()) <= SPREAD_MAX_GAP_DAYS_ * 86400000;
 }
