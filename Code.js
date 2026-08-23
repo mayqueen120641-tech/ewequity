@@ -5089,6 +5089,15 @@ function euckrEncode_(s) {
 var SEARCH_ROW_RE_ =
   /<td class="tit">\s*<a href="[^"]*code=(\d{6})"[^>]*>([^<]+)<\/a>([\s\S]*?)<\/tr>/g;
 
+// 정확히 한 종목만 일치하면 네이버는 표 대신 **자바스크립트 리다이렉트 한 줄**만 준다.
+//   <SCRIPT>parent.location.href='/item/main.naver?code=323410';</SCRIPT>
+// (실측: "카카오뱅크" 검색 시 70바이트 응답) 이걸 처리 안 하면 정확한 이름을 칠수록
+// 검색이 실패하는 이상한 동작이 된다.
+function parseNaverSearchRedirect_(html) {
+  const m = String(html).match(/location\.href\s*=\s*'[^']*code=(\d{6})/);
+  return m ? m[1] : null;
+}
+
 function parseNaverSearch_(html) {
   const out = [];
   SEARCH_ROW_RE_.lastIndex = 0;
@@ -5131,7 +5140,27 @@ function searchStocks(query, noCache) {
       headers: { 'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'], 'Referer': 'https://finance.naver.com/' },
       muteHttpExceptions: true
     });
-    if (res.getResponseCode() < 400) items = parseNaverSearch_(res.getContentText('EUC-KR'));
+    if (res.getResponseCode() < 400) {
+      const html = res.getContentText('EUC-KR');
+      items = parseNaverSearch_(html);
+      if (!items.length) {
+        // 단일 일치 → 코드만 얻었으므로 시세로 이름·시장을 채운다.
+        const code = parseNaverSearchRedirect_(html);
+        if (code) {
+          const one = safe_(function () { return getQuote(code + '.KS', false); });
+          const kq = (!one || one.error) ? safe_(function () { return getQuote(code + '.KQ', false); }) : null;
+          const hit = (one && !one.error) ? one : kq;
+          items = [{
+            code: code,
+            symbol: (hit && hit.symbol) || (code + '.KS'),
+            name: (hit && hit.name) || q,
+            market: (hit && /\.KQ$/i.test(hit.symbol)) ? 'KOSDAQ' : 'KOSPI',
+            price: (hit && hit.quote && hit.quote.value) || null,
+            changePct: (hit && hit.quote && hit.quote.changePct) || null
+          }];
+        }
+      }
+    }
   } catch (err) {
     console.log('searchStocks: ' + err);
   }
