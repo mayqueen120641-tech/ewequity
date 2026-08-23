@@ -3118,10 +3118,25 @@ function verifyIdToken_(idToken) {
 }
 
 // 사용자 데이터는 스프레드시트에 둔다. 스크립트 속성은 값당 9KB라 사람이 늘면 금방 찬다.
+// 저장용 스프레드시트는 **없으면 알아서 만든다.** 사용자가 시트를 따로 만들고 ID를
+// 붙여넣는 절차를 없애기 위함이다. 만든 뒤 ID를 스크립트 속성에 적어두므로 한 번만 생긴다.
+// ⚠️ 이 시트에는 접속 코드가 들어 있다 — **공유 설정을 절대 공개로 바꾸지 말 것.**
+function userSpreadsheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('USER_SHEET_ID');
+  if (id) {
+    const found = safe_(function () { return SpreadsheetApp.openById(id); });
+    if (found) return found;
+    console.log('userSpreadsheet_: USER_SHEET_ID가 가리키는 시트를 열지 못함 — 새로 만듭니다');
+  }
+  const ss = SpreadsheetApp.create('EweQuity 사용자 데이터');
+  props.setProperty('USER_SHEET_ID', ss.getId());
+  console.log('✅ 사용자 데이터 시트 생성: ' + ss.getUrl());
+  return ss;
+}
+
 function userSheet_(name, headers) {
-  const id = getProp_('USER_SHEET_ID');
-  if (!id) throw new Error('USER_SHEET_ID가 설정되지 않았습니다.');
-  const ss = SpreadsheetApp.openById(id);
+  const ss = userSpreadsheet_();
   var sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
@@ -3276,6 +3291,20 @@ function doPost(e) {
         break;
       case 'userdata':
         result = getUserData(token);
+        break;
+      // ---- 접속 코드 방식 (개인정보를 받지 않는 개인화) ----
+      // ⚠️ 코드는 곧 열쇠라 GET 쿼리에 실으면 안 된다(접속 로그·리퍼러에 남는다).
+      case 'newcode':
+        result = createCode(body.nickname);
+        break;
+      case 'opencode':
+        result = openCode(body.code);
+        break;
+      case 'savecode':
+        result = saveCodeData(body.code, body.data);
+        break;
+      case 'codenick':
+        result = setCodeNickname(body.code, body.nickname);
         break;
       case 'saveuserdata':
         result = saveUserData(token, JSON.stringify(body.data || {}));
@@ -4853,4 +4882,163 @@ function searchUsNewsOn_(symbol, targetDate) {
   });
   // 날짜 범위를 API가 직접 걸러줬으므로 "못 닿았다"는 경우가 없다.
   return { items: items.slice(0, 14), reached: true };
+}
+
+// ================= 21. 접속 코드 (개인화) =================
+// 구글 로그인 대신 **코드 하나만** 쓴다. 이메일·비밀번호·전화번호를 아예 받지 않으므로
+// 저장하는 개인정보가 없다 — 샐 것도 없다는 게 이 방식의 핵심 장점이다.
+//
+// ⚠️ 코드가 곧 열쇠다. 짧으면 대입으로 남의 관심종목을 읽고 **덮어쓸 수도 있다.**
+//    6자리 숫자는 100만 가지뿐이라 스크립트 하나로 전부 훑힌다 — 그래서 쓰지 않는다.
+
+// 헷갈리는 글자를 뺀 알파벳(0/O, 1/I/L 제외). 사람이 받아적고 옮겨 치는 걸 전제한다.
+var CODE_ALPHABET_ = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';   // 31자
+var CODE_LEN_ = 12;                                        // 31^12 ≈ 7.9 × 10^17
+// 헷갈리는 글자를 뺀 알파벳(0/1/I/L/O 제외). 사람이 받아적고 옮겨 치는 걸 전제한다.
+var CODE_ALPHABET_ = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';   // 31자
+var CODE_LEN_ = 12;                                        // 31^12 ≈ 7.9 × 10^17
+
+// GAS에는 암호학적 난수 API가 없다. Math.random()만으로는 예측 가능성이 걱정되므로
+// 시간 기반 UUID와 섞어서 뽑는다.
+function randomCode_() {
+  const pool = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').toUpperCase();
+  var out = '';
+  for (var i = 0; i < CODE_LEN_; i++) {
+    const mix = (pool.charCodeAt(i * 2) + Math.floor(Math.random() * 31)) % CODE_ALPHABET_.length;
+    out += CODE_ALPHABET_.charAt(mix);
+  }
+  return out;
+}
+
+// 화면에는 4자씩 끊어 보여주고, 입력은 아무렇게나 받아 정규화한다.
+function formatCode_(code) {
+  return String(code || '').replace(/(.{4})(.{4})(.{4})/, '$1-$2-$3');
+}
+
+// 알파벳에서 0·1·I·L·O를 뺐으므로, 사용자가 그 글자를 쳤다면 잘못 읽은 것이다.
+// 어느 글자가 문제인지 짚어주면 "코드가 틀렸다"보다 훨씬 고치기 쉽다.
+var CODE_CONFUSE_ = { '0': 'O가 아니라 숫자 0을 치셨는지', 'O': '0이 아니라 알파벳 O를 치셨는지',
+  '1': 'I나 L 자리에 숫자 1을 치셨는지', 'I': '1이 아니라 알파벳 I를 치셨는지',
+  'L': '1이 아니라 알파벳 L을 치셨는지' };
+
+function normalizeCode_(raw) {
+  const s = String(raw || '').toUpperCase().replace(/[^0-9A-Z]/g, '');
+  if (s.length !== CODE_LEN_) {
+    return { code: s, error: '코드는 ' + CODE_LEN_ + '자예요. 하이픈은 빼고 입력해도 됩니다. (지금 ' + s.length + '자)' };
+  }
+  for (var i = 0; i < s.length; i++) {
+    const c = s.charAt(i);
+    if (CODE_ALPHABET_.indexOf(c) === -1) {
+      return { code: s, error: '코드에 "' + c + '"는 쓰이지 않아요 — ' +
+        (CODE_CONFUSE_[c] || '다시 확인해주세요') + ' 확인해주세요.' };
+    }
+  }
+  return { code: s };
+}
+
+var CODE_PROP_PREFIX_ = 'UCODE_';
+var CODE_INDEX_PROP_ = 'UCODE_INDEX';
+var CODE_MAX_USERS_ = 300;
+var CODE_MAX_TRY_ = 5;
+
+// 저장은 **스크립트 속성**에 한다. 스프레드시트를 쓰려면 새 권한 승인이 필요한데
+// (실측: SpreadsheetApp.create 권한 오류), 관심종목 한 사람치가 1KB 남짓이라
+// 속성만으로 충분하다. 코드를 키로 바로 찾으므로 행을 훑을 필요도 없다.
+//   한도: 값 하나당 9KB, 전체 500KB → 넉넉잡아 300명
+// ⚠️ 접속 코드가 곧 열쇠다. 로그나 응답에 코드를 흘리지 말 것.
+
+function codeKey_(code) { return CODE_PROP_PREFIX_ + code; }
+
+function readCodeIndex_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(CODE_INDEX_PROP_) || '[]'); }
+  catch (err) { return []; }
+}
+
+function readCodeEntry_(code) {
+  const raw = PropertiesService.getScriptProperties().getProperty(codeKey_(code));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (err) { return null; }
+}
+
+function writeCodeEntry_(code, entry) {
+  PropertiesService.getScriptProperties().setProperty(codeKey_(code), JSON.stringify(entry));
+}
+
+var CODE_DAILY_CAP_ = 40;
+var CODE_COUNT_PROP_ = 'CODE_COUNT_V1';
+
+// 공개 URL이라 누구나 발급을 요청할 수 있다. 하루 상한을 두어 저장소가 통째로
+// 채워지는 걸 막는다(ask 엔드포인트와 같은 방식).
+function bumpCodeCount_() {
+  const props = PropertiesService.getScriptProperties();
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  var st = {};
+  try { st = JSON.parse(props.getProperty(CODE_COUNT_PROP_) || '{}'); } catch (err) { st = {}; }
+  if (st.date !== today) st = { date: today, n: 0 };
+  if (st.n >= CODE_DAILY_CAP_) return false;
+  st.n++;
+  props.setProperty(CODE_COUNT_PROP_, JSON.stringify(st));
+  return true;
+}
+
+function createCode(nickname) {
+  const index = readCodeIndex_();
+  if (index.length >= CODE_MAX_USERS_) {
+    return { error: '더 이상 코드를 만들 수 없어요. 관리자에게 문의해주세요.' };
+  }
+  if (!bumpCodeCount_()) {
+    return { error: '오늘 만들 수 있는 코드 수를 넘었어요. 내일 다시 시도해주세요.' };
+  }
+  var code = null;
+  for (var i = 0; i < CODE_MAX_TRY_; i++) {
+    const c = randomCode_();
+    if (!readCodeEntry_(c)) { code = c; break; }
+  }
+  if (!code) return { error: '코드를 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  const nick = sanitizeNick_(nickname);
+  const now = new Date().toISOString();
+  writeCodeEntry_(code, { nickname: nick, watchlist: [], portfolio: [], createdAt: now, updatedAt: now });
+  index.push(code);
+  PropertiesService.getScriptProperties().setProperty(CODE_INDEX_PROP_, JSON.stringify(index));
+  return { code: code, display: formatCode_(code), nickname: nick, watchlist: [], portfolio: [] };
+}
+
+function openCode(rawCode) {
+  const n = normalizeCode_(rawCode);
+  if (n.error) return { error: n.error };
+  const e = readCodeEntry_(n.code);
+  if (!e) return { error: '그런 코드를 찾지 못했어요. 대소문자는 상관없으니 글자를 다시 확인해주세요.', notFound: true };
+  return {
+    code: n.code, display: formatCode_(n.code), nickname: e.nickname || '',
+    watchlist: e.watchlist || [], portfolio: e.portfolio || [], updatedAt: e.updatedAt
+  };
+}
+
+function saveCodeData(rawCode, payload) {
+  const n = normalizeCode_(rawCode);
+  if (n.error) return { error: n.error };
+  const e = readCodeEntry_(n.code);
+  if (!e) return { error: '그런 코드를 찾지 못했어요.', notFound: true };
+
+  // 클라이언트가 뭘 보내든 우리가 쓰는 모양으로만 다시 만든다.
+  e.watchlist = cleanWatchlist_(payload && payload.watchlist);
+  e.portfolio = cleanPortfolio_(payload && payload.portfolio);
+  e.updatedAt = new Date().toISOString();
+
+  const raw = JSON.stringify(e);
+  // 속성 값 하나당 9KB 제한. 넘으면 저장 자체가 실패하므로 미리 막는다.
+  if (raw.length > 8500) return { error: '저장할 데이터가 너무 많아요.' };
+  PropertiesService.getScriptProperties().setProperty(codeKey_(n.code), raw);
+  return { ok: true, updatedAt: e.updatedAt };
+}
+
+function setCodeNickname(rawCode, nickname) {
+  const n = normalizeCode_(rawCode);
+  if (n.error) return { error: n.error };
+  const e = readCodeEntry_(n.code);
+  if (!e) return { error: '그런 코드를 찾지 못했어요.', notFound: true };
+  e.nickname = sanitizeNick_(nickname);
+  writeCodeEntry_(n.code, e);
+  return { nickname: e.nickname };
 }

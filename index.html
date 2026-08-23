@@ -678,6 +678,34 @@
     background:var(--panel);border:1px solid var(--panel-border);color:var(--sub);
   }
   .auth-acts button:hover{color:var(--text);}
+  .code-chip{
+    display:inline-block;margin-top:4px;padding:3px 8px;border-radius:6px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--panel-border);
+    font-size:11px;font-family:ui-monospace,Menlo,monospace;letter-spacing:.02em;color:var(--text);
+  }
+  .code-chip:hover{border-color:var(--accent);}
+  .code-big{
+    text-align:center;font-family:ui-monospace,Menlo,monospace;font-size:26px;font-weight:700;
+    letter-spacing:.06em;padding:18px 10px;margin:14px 0 10px;border-radius:12px;
+    background:var(--hover);border:1px solid var(--panel-border);word-break:break-all;
+  }
+  .code-warn{
+    font-size:12.5px;line-height:1.7;padding:11px 12px;border-radius:9px;
+    background:#FDF6E3;border:1px solid #E8D9B0;color:#8A6D3B;margin-bottom:12px;
+  }
+  .code-row{display:flex;gap:8px;margin-bottom:12px;}
+  .code-row input{
+    flex:1;min-width:0;padding:10px 12px;border-radius:9px;font-size:15px;
+    border:1px solid var(--panel-border);background:var(--panel);color:var(--text);
+    font-family:ui-monospace,Menlo,monospace;letter-spacing:.05em;text-transform:uppercase;
+  }
+  .code-row button, .code-copy{
+    padding:10px 16px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:600;
+    background:var(--accent);color:#fff;border:none;white-space:nowrap;
+  }
+  .code-copy{width:100%;margin-bottom:10px;}
+  .code-msg{font-size:12.5px;line-height:1.6;margin-top:10px;}
+  .code-msg.err{color:var(--down);}
   .auth-warn{
     margin:0 12px 10px;padding:10px 12px;border-radius:10px;font-size:10.5px;line-height:1.55;
     background:var(--hover);color:var(--sub);border-left:2px solid var(--accent);
@@ -747,11 +775,7 @@
 <!-- ⚠️ 여기에 배포한 Google Apps Script 웹 앱 URL을 넣으세요 -->
 <script>
   const GAS_URL = "https://script.google.com/macros/s/AKfycbzmBT3V0ZYu5gGmNpQSU0L963JylyfhqHgqlz0QHfJzgwr5bkqJGhnX1mRIg3ReBGgb/exec";
-  // 구글 로그인용 클라이언트 ID. 비밀값이 아니라 공개돼도 되는 값이다(구글이 등록된
-  // 도메인에서만 동작하게 막아준다). 발급 방법은 README 참고.
-  const GOOGLE_CLIENT_ID = "";
 </script>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <div class="app">
 
@@ -780,23 +804,23 @@
       <a href="#/settings"><span class="nav-icon">⚙</span><span class="nav-label">설정</span></a>
     </nav>
 
-    <!-- 로그인 영역. 구글이 신원을 확인해주므로 비밀번호는 받지도, 저장하지도 않는다. -->
+    <!-- 접속 코드. 이메일·비밀번호를 받지 않으므로 저장하는 개인정보가 없다. -->
     <div class="auth-box" id="authBox">
       <div id="authOut">
-        <div id="gsiBtn"></div>
-        <div class="auth-hint" id="authHint">로그인하면 관심 종목이 기기 간에 같이 보여요.</div>
+        <div class="auth-acts">
+          <button type="button" id="makeCodeBtn">내 코드 만들기</button>
+          <button type="button" id="enterCodeBtn">코드 입력</button>
+        </div>
+        <div class="auth-hint">코드 하나로 폰·PC에서 같은 관심 종목을 봅니다. 이메일·비밀번호는 받지 않아요.</div>
       </div>
       <div id="authIn" hidden>
-        <div class="auth-user">
-          <img id="authPic" alt="" hidden>
-          <div class="auth-meta">
-            <b id="authNick">-</b>
-            <span id="authMail"></span>
-          </div>
+        <div class="auth-meta">
+          <b id="authNick">-</b>
+          <span class="code-chip" id="authCode" title="눌러서 복사"></span>
         </div>
         <div class="auth-acts">
-          <button type="button" id="nickBtn">닉네임</button>
-          <button type="button" id="logoutBtn">로그아웃</button>
+          <button type="button" id="nickBtn">별칭</button>
+          <button type="button" id="logoutBtn">연결 해제</button>
         </div>
       </div>
     </div>
@@ -1325,6 +1349,16 @@
     </div>
     <div class="modal-quote" id="earnSub"></div>
     <div id="earnDetail"></div>
+  </div>
+</div>
+
+<div class="modal-back" id="codeBack">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="codeTitle">
+    <div class="modal-head">
+      <h3 id="codeTitle">내 접속 코드</h3>
+      <button class="modal-close" id="codeClose" aria-label="닫기">×</button>
+    </div>
+    <div id="codeBody"></div>
   </div>
 </div>
 
@@ -3710,37 +3744,29 @@ document.querySelectorAll('#finTabs button').forEach(function (btn) {
 // 목록은 브라우저에만 저장한다. 서버에 두려면 공개 URL(ANYONE_ANONYMOUS)에 쓰기
 // 엔드포인트를 열어야 하는데, 그러면 URL을 아는 누구나 남의 목록을 바꿀 수 있다.
 // 대신 기기 간 동기화는 안 된다 — 브라우저마다 별도 목록이다.
-// ---------- 로그인 ----------
-// 비밀번호는 받지도 저장하지도 않는다. 구글이 발급한 ID 토큰을 백엔드가 검증하고,
-// 사용자 구분은 토큰 안의 sub로만 한다(클라이언트가 보낸 값은 신뢰하지 않는다).
+// ---------- 접속 코드 (개인화) ----------
+// 구글 로그인 대신 코드 하나만 쓴다. 이메일·비밀번호·전화번호를 받지 않으므로
+// 저장하는 개인정보가 없다 — 이게 이 방식의 핵심이다.
 //
-// 토큰은 sessionStorage에만 둔다. localStorage에 두면 탭을 닫아도 남아서,
-// 공용 PC에서 다음 사람이 그대로 로그인된 상태가 된다.
-const TOKEN_KEY = 'ewequity.idToken';
-let idToken = null;
+// 코드는 이 기기의 localStorage에 기억해둔다(매번 칠 필요 없게).
+// ⚠️ 코드가 곧 열쇠라 GET 쿼리에 실으면 안 된다 — 전부 POST로 보낸다.
+const CODE_KEY = 'ewequity.code';
+let myCode = null;
 let me = null;
 
-try { idToken = sessionStorage.getItem(TOKEN_KEY); } catch (err) { idToken = null; }
+try { myCode = localStorage.getItem(CODE_KEY); } catch (err) { myCode = null; }
 
-function authConfigured() {
-  return typeof GOOGLE_CLIENT_ID === 'string' && GOOGLE_CLIENT_ID.length > 10;
-}
-
-// 로그인이 필요한 요청은 POST로 보낸다. GET 쿼리에 토큰을 실으면 접속 로그에 남는다.
 // Content-Type을 text/plain으로 두는 건 브라우저 사전 요청(preflight)을 피하기 위해서다 —
-// GAS 웹앱은 preflight에 응답하지 못해서 application/json으로 보내면 통째로 막힌다.
+// GAS 웹앱은 preflight에 응답하지 못해 application/json으로 보내면 통째로 막힌다.
 async function apiPost(action, body) {
   if (!isConfigured()) throw new Error('GAS_URL not set');
   const res = await fetch(GAS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({ action: action, idToken: idToken }, body || {}))
+    body: JSON.stringify(Object.assign({ action: action }, body || {}))
   });
   if (!res.ok) throw new Error('API error ' + res.status);
-  const json = await res.json();
-  // 토큰이 만료됐으면(구글 ID 토큰은 1시간) 조용히 로그아웃시켜 다시 누르게 한다.
-  if (json && json.authRequired) { doLogout(true); throw new Error('auth required'); }
-  return json;
+  return res.json();
 }
 
 function renderAuth() {
@@ -3751,47 +3777,112 @@ function renderAuth() {
   out.hidden = on;
   inn.hidden = !on;
   if (!on) return;
-  document.getElementById('authNick').textContent = me.nickname || '이름없는양';
-  document.getElementById('authMail').textContent = me.email || '';
-  const pic = document.getElementById('authPic');
-  if (me.picture) { pic.src = me.picture; pic.hidden = false; } else { pic.hidden = true; }
+  document.getElementById('authNick').textContent = me.nickname || '내 관심 종목';
+  document.getElementById('authCode').textContent = me.display || '';
 }
 
-// 구글 로그인 버튼이 토큰을 들고 돌아오는 지점
-async function onGoogleCredential(resp) {
-  if (!resp || !resp.credential) return;
-  idToken = resp.credential;
-  try { sessionStorage.setItem(TOKEN_KEY, idToken); } catch (err) { /* 시크릿 모드 */ }
+const codeBack = document.getElementById('codeBack');
+function closeCode() { codeBack.classList.remove('show'); }
+document.getElementById('codeClose').addEventListener('click', closeCode);
+codeBack.addEventListener('click', function (e) { if (e.target === codeBack) closeCode(); });
+
+function showCodeModal(title, html) {
+  document.getElementById('codeTitle').textContent = title;
+  document.getElementById('codeBody').innerHTML = html;
+  codeBack.classList.add('show');
+}
+
+// 코드를 잃어버리면 복구할 방법이 없다(이메일을 안 받으니까).
+// 그래서 발급 직후 화면에서 크게 보여주고 복사 버튼을 붙인다.
+function showNewCode(d) {
+  showCodeModal('내 접속 코드가 만들어졌어요',
+    '<div class="code-warn"><b>이 코드를 꼭 메모해두세요.</b><br>' +
+    '이메일이나 비밀번호를 받지 않기 때문에, 코드를 잃어버리면 <b>되찾을 방법이 없습니다.</b></div>' +
+    '<div class="code-big">' + esc_(d.display) + '</div>' +
+    '<button class="code-copy" id="codeCopyBtn">코드 복사하기</button>' +
+    '<div class="modal-foot">다른 기기에서 <b>코드 입력</b>을 누르고 이 코드를 넣으면 ' +
+    '같은 관심 종목이 그대로 보입니다. 대소문자와 하이픈은 상관없어요.</div>');
+  const btn = document.getElementById('codeCopyBtn');
+  if (btn) btn.addEventListener('click', function () { copyCode(d.display, btn); });
+}
+
+function copyCode(text, btn) {
+  const done = function () { btn.textContent = '복사됐어요 ✓'; setTimeout(function () { btn.textContent = '코드 복사하기'; }, 1800); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(function () { fallbackCopy(text, done); });
+  } else fallbackCopy(text, done);
+}
+
+// 클립보드 API가 막힌 환경(구형 브라우저·비보안 컨텍스트)을 위한 우회
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); done(); } catch (err) { /* 조용히 무시 */ }
+  document.body.removeChild(ta);
+}
+
+async function makeCode() {
+  const nick = prompt('별칭을 정해주세요 (선택, 최대 20자)\n예: 서현의양', '');
+  if (nick === null) return;
   try {
-    me = await apiPost('me');
-    if (me.error) throw new Error(me.error);
-    renderAuth();
-    await mergeAndLoadUserData(me.isNew);
+    const d = await apiPost('newcode', { nickname: nick });
+    if (d.error) { alert(d.error); return; }
+    adoptCode(d);
+    showNewCode(d);
   } catch (err) {
     console.error(err);
-    doLogout(true);
-    alert('로그인에 실패했어요. 잠시 후 다시 시도해주세요.');
+    alert('코드를 만들지 못했어요. 잠시 후 다시 시도해주세요.');
   }
 }
 
-// 처음 로그인하면 이 기기에 있던 관심종목을 계정으로 옮겨준다. 안 그러면 로그인하자마자
-// 목록이 빈 것처럼 보여서 "데이터가 날아갔다"고 느낀다.
-async function mergeAndLoadUserData(isNew) {
-  let server;
-  try { server = await apiPost('userdata'); } catch (err) { return; }
-  if (!server || server.error) return;
+function askCode() {
+  showCodeModal('코드 입력',
+    '<div class="code-row">' +
+    '<input id="codeInput" type="text" placeholder="Y835-3G8X-FA4U" maxlength="20" autocomplete="off">' +
+    '<button id="codeGoBtn">열기</button></div>' +
+    '<div class="code-msg" id="codeMsg">대소문자와 하이픈은 상관없어요.</div>');
+  const go = document.getElementById('codeGoBtn');
+  const input = document.getElementById('codeInput');
+  go.addEventListener('click', function () { submitCode(input.value); });
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitCode(this.value); });
+  input.focus();
+}
 
+async function submitCode(raw) {
+  const msg = document.getElementById('codeMsg');
+  msg.className = 'code-msg';
+  msg.textContent = '확인하는 중…';
+  try {
+    const d = await apiPost('opencode', { code: raw });
+    if (d.error) { msg.className = 'code-msg err'; msg.textContent = d.error; return; }
+    adoptCode(d);
+    closeCode();
+  } catch (err) {
+    console.error(err);
+    msg.className = 'code-msg err';
+    msg.textContent = '불러오지 못했어요. 잠시 후 다시 시도해주세요.';
+  }
+}
+
+// 코드를 이 기기에 기억시키고, 서버에 있던 관심종목을 화면에 반영한다.
+function adoptCode(d) {
+  myCode = d.code;
+  me = d;
+  try { localStorage.setItem(CODE_KEY, myCode); } catch (err) { /* 시크릿 모드 */ }
+  renderAuth();
+  mergeServerWatchlist(d.watchlist || []);
+}
+
+// 이 기기에 담아둔 게 있고 서버가 비어 있으면 올려주고, 둘 다 있으면 물어본다.
+// 안 물어보고 덮어쓰면 "담아둔 게 날아갔다"가 된다.
+function mergeServerWatchlist(remote) {
   const local = watchlist || [];
-  const remote = server.watchlist || [];
-
-  if (remote.length === 0 && local.length > 0) {
-    // 계정 쪽이 비어 있으면 이 기기 목록을 그대로 올린다.
-    await pushUserData(true);
-  } else if (local.length > 0 && !sameWatchlist(local, remote)) {
+  if (!remote.length && local.length) { pushUserData(true); }
+  else if (local.length && !sameWatchlist(local, remote)) {
     const keep = confirm(
-      '이 기기의 관심종목 ' + local.length + '개와 계정에 저장된 ' + remote.length + '개가 다릅니다.\n\n' +
-      '확인 = 두 목록을 합칩니다\n취소 = 계정에 저장된 목록을 씁니다'
-    );
+      '이 기기의 관심종목 ' + local.length + '개와 코드에 저장된 ' + remote.length + '개가 다릅니다.\n\n' +
+      '확인 = 두 목록을 합칩니다\n취소 = 코드에 저장된 목록을 씁니다');
     watchlist = keep ? mergeWatchlists(remote, local) : remote.slice();
     saveWatchlist();
   } else {
@@ -3817,79 +3908,58 @@ function mergeWatchlists(base, extra) {
   return out;
 }
 
-// 저장은 연달아 일어난다(종목 추가/삭제). 매번 서버를 때리지 않도록 잠깐 모아서 보낸다.
+// 관심종목을 담고 빼는 건 연달아 일어난다. 매번 서버를 때리지 않도록 잠깐 모아서 보낸다.
 let pushTimer = null;
 
 function pushUserData(now) {
-  if (!me || !idToken) return Promise.resolve();
+  if (!myCode) return Promise.resolve();
   if (pushTimer) clearTimeout(pushTimer);
   const send = function () {
-    return apiPost('saveuserdata', { data: { watchlist: watchlist, portfolio: [] } })
-      .catch(function (err) { console.error('계정에 저장하지 못했습니다', err); });
+    return apiPost('savecode', { code: myCode, data: { watchlist: watchlist, portfolio: [] } })
+      .catch(function (err) { console.error('코드에 저장하지 못했습니다', err); });
   };
   if (now) return send();
   pushTimer = setTimeout(send, 800);
   return Promise.resolve();
 }
 
-function doLogout(silent) {
-  idToken = null;
-  me = null;
-  try { sessionStorage.removeItem(TOKEN_KEY); } catch (err) { /* noop */ }
-  if (window.google && google.accounts && google.accounts.id) {
-    google.accounts.id.disableAutoSelect();
-  }
+function forgetCode() {
+  if (!confirm('이 기기에서 코드 연결을 해제할까요?\n\n코드 자체는 사라지지 않습니다 — 다시 입력하면 그대로 열립니다.\n관심종목도 서버에 그대로 남아 있어요.')) return;
+  myCode = null; me = null;
+  try { localStorage.removeItem(CODE_KEY); } catch (err) { /* noop */ }
   renderAuth();
-  if (!silent) location.reload();
-}
-
-function initAuth() {
-  const box = document.getElementById('authBox');
-  if (!authConfigured()) {
-    // 아직 설정 전이면 로그인 버튼 자리에 안내를 띄운다.
-    if (box) box.innerHTML = '<div class="auth-hint">구글 로그인을 쓰려면 ' +
-      '<b>GOOGLE_CLIENT_ID</b>를 넣어주세요. (README 참고)</div>';
-    return;
-  }
-  if (!window.google || !google.accounts || !google.accounts.id) {
-    // GSI 스크립트가 async라 아직 안 왔을 수 있다.
-    setTimeout(initAuth, 300);
-    return;
-  }
-  google.accounts.id.initialize({
-    client_id: GOOGLE_CLIENT_ID,
-    callback: onGoogleCredential,
-    auto_select: false,
-    cancel_on_tap_outside: true
-  });
-  google.accounts.id.renderButton(document.getElementById('gsiBtn'),
-    { theme: 'outline', size: 'medium', text: 'signin_with', locale: 'ko', width: 200 });
-
-  const nb = document.getElementById('nickBtn');
-  const lb = document.getElementById('logoutBtn');
-  if (nb) nb.addEventListener('click', changeNickname);
-  if (lb) lb.addEventListener('click', function () { doLogout(false); });
-
-  // 새로고침해도 이번 탭에서는 로그인이 유지되게 한다.
-  if (idToken) {
-    apiPost('me').then(function (r) {
-      if (r && !r.error) { me = r; renderAuth(); return mergeAndLoadUserData(false); }
-    }).catch(function () { /* 만료된 토큰 — apiPost가 이미 정리했다 */ });
-  }
 }
 
 async function changeNickname() {
-  const cur = (me && me.nickname) || '';
-  const next = prompt('닉네임을 입력하세요 (최대 20자)', cur);
+  if (!myCode) return;
+  const next = prompt('별칭을 입력하세요 (최대 20자)', (me && me.nickname) || '');
   if (next === null) return;
   try {
-    const r = await apiPost('nickname', { nickname: next });
+    const r = await apiPost('codenick', { code: myCode, nickname: next });
     if (r.error) { alert(r.error); return; }
     me.nickname = r.nickname;
     renderAuth();
   } catch (err) {
     console.error(err);
-    alert('닉네임을 바꾸지 못했어요.');
+    alert('별칭을 바꾸지 못했어요.');
+  }
+}
+
+function initAuth() {
+  document.getElementById('makeCodeBtn').addEventListener('click', makeCode);
+  document.getElementById('enterCodeBtn').addEventListener('click', askCode);
+  document.getElementById('nickBtn').addEventListener('click', changeNickname);
+  document.getElementById('logoutBtn').addEventListener('click', forgetCode);
+  document.getElementById('authCode').addEventListener('click', function () {
+    if (me && me.display) copyCode(me.display, this);
+  });
+
+  // 이 기기가 기억하고 있는 코드가 있으면 조용히 이어서 연다.
+  if (myCode && isConfigured()) {
+    apiPost('opencode', { code: myCode }).then(function (d) {
+      if (d && !d.error) adoptCode(d);
+      else if (d && d.notFound) { myCode = null; try { localStorage.removeItem(CODE_KEY); } catch (e) {} }
+    }).catch(function () { /* 오프라인 등 — 로컬 관심종목으로 계속 동작 */ });
   }
 }
 
