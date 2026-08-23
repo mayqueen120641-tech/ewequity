@@ -3984,6 +3984,7 @@ function searchStockNewsOn_(name, targetDate, query) {
   const seen = {};
   var reached = false;   // 목표 날짜까지 실제로 거슬러 갔는지
   var oldest = null;
+  var prevOldest = null, stagnant = 0;
 
   for (var page = 0; page < NEWS_MAX_PAGES_; page++) {
     const start = page * NEWS_PAGE_SIZE_ + 1;
@@ -4020,6 +4021,20 @@ function searchStockNewsOn_(name, targetDate, query) {
     // 이번 페이지의 가장 오래된 기사가 이미 목표 구간보다 과거면 더 볼 필요가 없다.
     const lastDate = ymdOf_(items[items.length - 1].pubDate);
     if (lastDate && lastDate < from) { reached = true; break; }
+
+    // 못 닿을 걸 미리 알고 멈춘다. 삼성전자처럼 기사가 쏟아지는 종목은 1000건을 다 훑어도
+    // 며칠을 못 가는데, 그걸 확인하느라 10번을 호출하며 15초를 버렸다(실측).
+    //
+    // 처음엔 "첫 페이지가 덮은 날수 × 남은 페이지"로 도달 가능성을 계산했는데 빗나갔다.
+    // 네이버는 뒤 페이지로 갈수록 **새 기사를 거의 주지 않기** 때문이다(같은 기사가 반복).
+    // 그래서 추정하지 말고 **실제 진행이 멈췄는지**를 본다.
+    if (prevOldest !== null && oldest !== null && oldest >= prevOldest) {
+      stagnant++;
+      if (stagnant >= 2) break;   // 두 페이지 연속 제자리면 더 봐야 소용없다
+    } else {
+      stagnant = 0;
+    }
+    prevOldest = oldest;
   }
   // 검색이 목표 날짜보다 과거까지 닿았으면 "그날 기사가 없다"가 확실하고,
   // 못 닿았으면 "너무 오래돼서 찾을 수 없다"가 맞다. 이 둘은 사용자에게 다른 말이다.
@@ -4055,14 +4070,19 @@ function getExplainOn(symbol, name, dateStr, noCache) {
   const key = getProp_('ANTHROPIC_API_KEY');
   if (!key) return { error: 'AI 설명 기능은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
 
-  // 종목명만으로 검색하면 대형주는 하루 수백 건이 쏟아져 600~1000건으로도 며칠을 못 간다
-  // (실측: 삼성전자는 1000건이 하루치). "주가"를 붙여 범위를 좁히면 훨씬 멀리 닿고,
-  // 어차피 우리가 찾는 건 주가를 움직인 기사라 관련도도 올라간다.
-  var found = searchStockNewsOn_(nm, date, nm + ' 주가');
-  // 좁힌 검색으로 못 찾았고 아직 그날까지 닿지도 못했으면 종목명만으로 한 번 더 시도한다.
-  if (!found.items.length && !found.reached) {
-    const wide = searchStockNewsOn_(nm, date);
-    if (wide.items.length || wide.reached) found = wide;
+  // 국내는 네이버, 해외는 Finnhub — 소스가 다르다.
+  // 해외 종목을 한국 뉴스에서 찾으면("Apple Inc. 주가") 거의 안 나온다.
+  var found;
+  if (krCode_(sym)) {
+    // 종목명만으로 검색하면 대형주는 하루 수백 건이 쏟아져 1000건으로도 며칠을 못 간다
+    // (실측: 삼성전자는 하루치). "주가"를 붙여 범위를 좁히면 훨씬 멀리 닿는다.
+    found = searchStockNewsOn_(nm, date, nm + ' 주가');
+    if (!found.items.length && !found.reached) {
+      const wide = searchStockNewsOn_(nm, date);
+      if (wide.items.length || wide.reached) found = wide;
+    }
+  } else {
+    found = searchUsNewsOn_(sym, date);
   }
   const move = moveOnDate_(sym, date);
 
@@ -4072,8 +4092,9 @@ function getExplainOn(symbol, name, dateStr, noCache) {
       // 못 찾은 이유를 구분해서 알려준다 — "기사가 없다"와 "너무 오래됐다"는 다르다
       error: found.reached
         ? '"' + nm + '"의 ' + date + ' 기사를 찾지 못했어요. 그날 관련 보도가 없었을 수 있습니다.'
-        : '뉴스 검색이 ' + date + '까지 닿지 못했어요.' +
-          (found.oldest ? ' "' + nm + '" 기사를 ' + found.oldest + '까지 거슬러 올라갔지만 그보다 과거는 볼 수 없었습니다.' : '')
+        : '뉴스 검색이 ' + date + '까지 닿지 못했어요. "' + nm + '"은(는) 기사가 워낙 많이 쏟아져서 ' +
+          (found.oldest ? found.oldest + '보다 과거로는' : '며칠 전으로도') +
+          ' 거슬러 올라갈 수 없습니다(네이버 뉴스 검색은 날짜 범위 조건이 없어 최신 기사부터 훑는 방식입니다).'
     };
     cachePut_(cacheKey, data, 3600);
     return data;
@@ -4788,4 +4809,48 @@ function betaOf_(stock, market) {
   }
   if (!varM) return null;
   return { value: Math.round((cov / varM) * 100) / 100, days: xs.length };
+}
+
+// ---- 해외 종목의 그날 뉴스 (Finnhub) ----
+// 네이버 뉴스로 "Apple Inc. 주가"를 찾으니 당연히 안 나왔다. 게다가 네이버는 날짜 범위
+// 조건이 없어 과거로 못 간다.
+// Finnhub company-news는 **from/to 날짜를 직접 받는다** — 두 문제가 한 번에 풀린다.
+function searchUsNewsOn_(symbol, targetDate) {
+  const key = PropertiesService.getScriptProperties().getProperty('FINNHUB_API_KEY');
+  if (!key) return { items: [], reached: false };
+  const from = shiftDate_(targetDate, -1);
+  // to를 하루 넉넉히 잡아 경계에 걸친 기사를 놓치지 않는다(아래에서 다시 걸러낸다).
+  var arr;
+  try {
+    arr = fetchJson_('https://finnhub.io/api/v1/company-news?symbol=' +
+      encodeURIComponent(symbol) + '&from=' + from + '&to=' + shiftDate_(targetDate, 1) + '&token=' + key);
+  } catch (err) {
+    return { items: [], reached: false };
+  }
+  if (!arr || !arr.length) return { items: [], reached: true };
+
+  const seen = {};
+  const items = [];
+  arr.forEach(function (n) {
+    if (!n.headline || !n.url || seen[n.url]) return;
+    seen[n.url] = true;
+    // ⚠️ 미국 종목 뉴스를 한국 시간으로 찍으면 안 된다. 미국 장 마감 후(현지 저녁) 기사가
+    // 한국 시간으론 **다음 날**이 되어 "그날 기사가 없다"처럼 보인다(실측: NVDA 6/30 조회에
+    // 7/1 기사만 잡힘). 미국 동부 시간으로 맞춰야 미국 거래일과 아귀가 맞는다.
+    const d = n.datetime
+      ? Utilities.formatDate(new Date(n.datetime * 1000), 'America/New_York', 'yyyy-MM-dd')
+      : targetDate;
+    // 미국 동부 기준으로 목표일과 그 전날 기사만 남긴다.
+    if (d < from || d > targetDate) return;
+    items.push({
+      title: String(n.headline).slice(0, 200),
+      description: String(n.summary || '').slice(0, 300),
+      link: n.url,
+      pubDate: d,
+      date: d,
+      source: n.source || ''
+    });
+  });
+  // 날짜 범위를 API가 직접 걸러줬으므로 "못 닿았다"는 경우가 없다.
+  return { items: items.slice(0, 14), reached: true };
 }
