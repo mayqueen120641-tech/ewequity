@@ -18,6 +18,9 @@ function doGet(e) {
       case 'news':
         result = getNews((e.parameter && e.parameter.category) || 'all', noCache);
         break;
+      case 'search':
+        result = searchStocks((e.parameter && e.parameter.q) || '', noCache);
+        break;
       case 'quote':
         result = getQuote((e.parameter && e.parameter.symbol) || '', noCache);
         break;
@@ -5052,4 +5055,94 @@ function setCodeNickname(rawCode, nickname) {
   e.nickname = sanitizeNick_(nickname);
   writeCodeEntry_(n.code, e);
   return { nickname: e.nickname };
+}
+
+// ================= 22. 종목 후보 검색 =================
+// "에코프로"라고만 쳐도 에코프로·에코프로비엠·에코프로머티가 다 뜨고 고를 수 있게 한다.
+// 기존 resolveSymbol_은 **하나만** 골라줘서, 비슷한 이름이 여럿일 때 엉뚱한 걸 집었다.
+//
+// ⚠️ 네이버 금융 검색은 쿼리를 **EUC-KR로 인코딩**해야 한다. UTF-8로 보내면 404가 온다.
+//    GAS의 encodeURIComponent는 UTF-8이므로 직접 바꿔줘야 한다.
+
+var NAVER_SEARCH_URL_ = 'https://finance.naver.com/search/search.naver?query=';
+var SEARCH_CACHE_SEC_ = 3600;
+var SEARCH_MAX_ = 12;
+
+// GAS에는 EUC-KR 퍼센트 인코딩이 없다. 문자열을 EUC-KR 바이트로 바꾼 뒤 손으로 %XX를 만든다.
+function euckrEncode_(s) {
+  // setDataFromString(문자열, charset)이 그 인코딩의 바이트로 바꿔준다.
+  const raw = Utilities.newBlob('').setDataFromString(s, 'EUC-KR').getBytes();
+  var out = '';
+  for (var i = 0; i < raw.length; i++) {
+    const b = raw[i] & 0xFF;
+    // 영숫자와 일부 기호는 그대로 둔다.
+    if ((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A)) {
+      out += String.fromCharCode(b);
+    } else {
+      out += '%' + ('0' + b.toString(16)).slice(-2).toUpperCase();
+    }
+  }
+  return out;
+}
+
+// 표의 각 행: <td class="tit"><a href="...code=086520">에코프로</a> ... <td>81,700</td> ...
+var SEARCH_ROW_RE_ =
+  /<td class="tit">\s*<a href="[^"]*code=(\d{6})"[^>]*>([^<]+)<\/a>([\s\S]*?)<\/tr>/g;
+
+function parseNaverSearch_(html) {
+  const out = [];
+  SEARCH_ROW_RE_.lastIndex = 0;
+  var m;
+  while ((m = SEARCH_ROW_RE_.exec(html)) !== null && out.length < SEARCH_MAX_) {
+    const code = m[1];
+    const name = stripTags_(m[2]).trim();
+    const rest = m[3];
+    // 시장 구분은 이미지 alt에 들어 있다(코스피/코스닥).
+    const mk = rest.match(/ico_(KOSPI|KOSDAQ)\.gif/i);
+    const tds = (rest.match(/<td[^>]*>[\s\S]*?<\/td>/g) || [])
+      .map(function (t) { return stripTags_(t).replace(/\s+/g, ' ').trim(); });
+    const price = tds[0] ? Number(tds[0].replace(/[^0-9.-]/g, '')) : null;
+    const pctRaw = tds[2] || '';
+    const pct = pctRaw ? Number(pctRaw.replace(/[^0-9.-]/g, '')) : null;
+    out.push({
+      code: code,
+      symbol: code + (mk && /KOSDAQ/i.test(mk[1]) ? '.KQ' : '.KS'),
+      name: name,
+      market: mk ? mk[1].toUpperCase() : null,
+      price: isNaN(price) ? null : price,
+      changePct: (pct === null || isNaN(pct)) ? null : (/down/.test(pctRaw) ? -Math.abs(pct) : pct)
+    });
+  }
+  return out;
+}
+
+function searchStocks(query, noCache) {
+  const q = String(query || '').trim();
+  if (!q) return { items: [], query: q };
+  if (q.length > 30) return { error: '검색어가 너무 깁니다.' };
+
+  const cacheKey = 'search_' + q.toLowerCase();
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  var items = [];
+  try {
+    const res = UrlFetchApp.fetch(NAVER_SEARCH_URL_ + euckrEncode_(q), {
+      headers: { 'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'], 'Referer': 'https://finance.naver.com/' },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() < 400) items = parseNaverSearch_(res.getContentText('EUC-KR'));
+  } catch (err) {
+    console.log('searchStocks: ' + err);
+  }
+
+  // 국내에서 못 찾았고 영문·숫자로만 이뤄졌으면 해외 티커로 본다.
+  var us = null;
+  if (!items.length && /^[A-Za-z.\-]{1,10}$/.test(q)) {
+    us = { symbol: q.toUpperCase(), name: q.toUpperCase(), market: 'US' };
+  }
+
+  const data = { query: q, items: items, us: us };
+  cachePut_(cacheKey, data, SEARCH_CACHE_SEC_);
+  return data;
 }

@@ -504,6 +504,19 @@
   .pol-term b{display:block;font-size:12px;margin-bottom:4px;}
   .pol-term span{font-size:11.5px;color:var(--sub);line-height:1.6;}
 
+  /* 종목 후보 목록 */
+  .cand-head{font-size:12.5px;color:var(--sub);margin-bottom:10px;line-height:1.6;}
+  .cand-list{display:flex;flex-direction:column;gap:6px;}
+  .cand{
+    display:flex;align-items:baseline;gap:10px;width:100%;text-align:left;cursor:pointer;
+    padding:10px 12px;border-radius:9px;background:var(--panel);
+    border:1px solid var(--panel-border);font-size:13px;color:var(--text);
+  }
+  .cand:hover{border-color:var(--accent);background:var(--hover);}
+  .cand .cn{font-weight:600;flex:0 0 auto;}
+  .cand .cm{font-size:10.5px;color:var(--sub);flex:1;}
+  .cand .cp{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;}
+
   /* ---------- 차트 분석 ---------- */
   .chart-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;}
   .chart-search{flex:1;min-width:220px;margin:0;}
@@ -4096,6 +4109,33 @@ function mockQuote(query) {
   };
 }
 
+// 여러 종목이 잡히면 목록으로 보여주고 고르게 한다.
+function renderCandidates(items, query) {
+  const el = document.getElementById('quoteResult');
+  el.className = 'search-result show';
+  el.innerHTML =
+    '<div class="cand-head">"' + esc_(query) + '"로 <b>' + items.length + '개</b> 종목을 찾았어요. 하나를 골라주세요.</div>' +
+    '<div class="cand-list">' + items.map(function (it) {
+      const cls = changeClass(it.changePct);
+      const pct = (it.changePct === null || it.changePct === undefined) ? ''
+        : '<span class="change ' + cls + '">' + (it.changePct > 0 ? '+' : '') + fmtNum(it.changePct, 2) + '%</span>';
+      return '<button class="cand" data-symbol="' + esc_(it.symbol) + '">' +
+        '<span class="cn">' + esc_(it.name) + '</span>' +
+        '<span class="cm">' + esc_(it.market || '') + ' · ' + esc_(it.code) + '</span>' +
+        '<span class="cp">' + (it.price ? fmtNum(it.price, 0) : '–') + ' ' + pct + '</span>' +
+        '</button>';
+    }).join('') + '</div>';
+  el.querySelectorAll('.cand').forEach(function (b) {
+    b.addEventListener('click', function () { showQuote(b.dataset.symbol); });
+  });
+}
+
+// 고른 종목을 실제로 조회한다(기존 경로 재사용).
+function showQuote(symbol) {
+  document.getElementById('quoteInput').value = symbol;
+  searchQuote();
+}
+
 async function searchQuote() {
   const input = document.getElementById('quoteInput');
   const resultEl = document.getElementById('quoteResult');
@@ -4108,6 +4148,20 @@ async function searchQuote() {
 
   resultEl.className = 'search-result show';
   resultEl.innerHTML = '<div class="loading">조회 중…</div>';
+
+  // "에코프로"처럼 비슷한 이름이 여럿이면 바로 조회하지 말고 **고르게 한다.**
+  // 예전에는 하나를 알아서 집어서, 원하는 게 아닌 종목이 뜨는 일이 있었다.
+  if (isConfigured() && /[가-힣]/.test(query)) {
+    try {
+      const cand = await apiGet('search', { q: query });
+      const items = (cand && cand.items) || [];
+      if (items.length > 1) { renderCandidates(items, query); return; }
+      if (items.length === 1) return showQuote(items[0].symbol);
+    } catch (err) {
+      // 후보 검색이 실패해도 아래 기존 조회로 계속 진행한다.
+      console.error(err);
+    }
+  }
 
   try {
     const data = isConfigured() ? await apiGet('quote', { symbol: query }) : mockQuote(query);
