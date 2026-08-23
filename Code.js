@@ -3752,6 +3752,13 @@ function getChart(symbol, rangeKey, noCache) {
   // 같은 기간 지수. 실패해도 차트 본체는 그대로 보여줘야 하므로 safe_로 감싼다.
   data.priceSeries = toPctSeries_(closes);
   data.bench = buildBench_(sym, pts.map(function (p) { return p.date; }), rk);
+
+  // 위험 지표 — 수익률만 보고 위험을 지나치지 않도록.
+  data.risk = { drawdown: maxDrawdown_(pts), beta: null, benchName: null };
+  if (data.bench) {
+    data.risk.beta = betaOf_(dailyFromCum_(data.priceSeries), dailyFromCum_(data.bench.series));
+    data.risk.benchName = data.bench.name;
+  }
   cachePut_(cacheKey, data, CHART_CACHE_SEC_);
   return data;
 }
@@ -4701,4 +4708,84 @@ function getPolicy(noCache) {
   };
   cachePut_('policy', data, POLICY_NEWS_CACHE_SEC_);
   return data;
+}
+
+// ================= 20. 위험 지표 (낙폭·베타) =================
+// gs-quant(Apache-2.0)의 econometrics 개념을 우리 데이터로 다시 구현한 것.
+// 코드를 옮긴 게 아니라 정의를 보고 직접 계산한다(그쪽은 Python, 여기는 GAS).
+//
+// ⚠️ 초보자는 수익률만 보고 **위험을 안 본다.** "1년에 20% 올랐다"는 알아도
+//    "중간에 40% 빠졌다"는 모른다. 이 두 지표는 그 빈자리를 채우는 게 목적이다.
+//    매수·매도 신호로 읽히지 않게 화면 문구를 쓸 것.
+
+// 최대 낙폭 — 고점에서 저점까지 가장 크게 빠진 폭.
+// 단순히 (최저-최고)가 아니다. **저점은 고점보다 뒤에 와야 한다**(먼저 빠지고 나중에
+// 오른 건 낙폭이 아니다). 그래서 앞에서부터 훑으며 그때까지의 고점을 계속 갱신한다.
+function maxDrawdown_(points) {
+  if (!points || points.length < 2) return null;
+  var peak = points[0].close, peakDate = points[0].date;
+  var worst = 0, wPeakDate = null, wTroughDate = null, wPeak = null, wTrough = null;
+
+  points.forEach(function (p) {
+    if (p.close > peak) { peak = p.close; peakDate = p.date; }
+    if (!peak) return;
+    const dd = (p.close - peak) / peak;   // 음수
+    if (dd < worst) {
+      worst = dd;
+      wPeakDate = peakDate; wTroughDate = p.date;
+      wPeak = peak; wTrough = p.close;
+    }
+  });
+  if (!wTroughDate) return null;
+
+  // 저점 이후 고점을 되찾았는지 — 되찾았으면 "회복까지 며칠"을 알려줄 수 있다.
+  var recoveredDate = null;
+  var seenTrough = false;
+  for (var i = 0; i < points.length; i++) {
+    if (points[i].date === wTroughDate) { seenTrough = true; continue; }
+    if (seenTrough && points[i].close >= wPeak) { recoveredDate = points[i].date; break; }
+  }
+  return {
+    pct: Math.round(worst * 1000) / 10,     // -48.3 처럼 음수
+    peakDate: wPeakDate, troughDate: wTroughDate,
+    peak: wPeak, trough: wTrough,
+    recoveredDate: recoveredDate,
+    days: daysBetween_(wPeakDate, recoveredDate || wTroughDate)
+  };
+}
+
+function daysBetween_(a, b) {
+  const da = toDateObj_(a), db = toDateObj_(b);
+  if (!da || !db) return null;
+  return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
+
+// 누적 변화율(%)에서 일별 수익률로 되돌린다. 베타는 일별 수익률로 계산해야 한다.
+function dailyFromCum_(cum) {
+  const out = [];
+  for (var i = 1; i < cum.length; i++) {
+    const a = cum[i - 1], b = cum[i];
+    if (a === null || b === null) { out.push(null); continue; }
+    out.push(((1 + b / 100) / (1 + a / 100)) - 1);
+  }
+  return out;
+}
+
+// 베타 = 종목과 시장의 공분산 ÷ 시장의 분산.
+// "시장이 1% 움직일 때 이 종목은 평균 몇 % 움직였나"를 뜻한다.
+function betaOf_(stock, market) {
+  const xs = [], ys = [];
+  for (var i = 0; i < Math.min(stock.length, market.length); i++) {
+    if (stock[i] === null || market[i] === null) continue;
+    xs.push(stock[i]); ys.push(market[i]);
+  }
+  if (xs.length < 20) return null;   // 표본이 너무 적으면 숫자가 튄다
+  const mx = mean_(xs), my = mean_(ys);
+  var cov = 0, varM = 0;
+  for (var j = 0; j < xs.length; j++) {
+    cov += (xs[j] - mx) * (ys[j] - my);
+    varM += (ys[j] - my) * (ys[j] - my);
+  }
+  if (!varM) return null;
+  return { value: Math.round((cov / varM) * 100) / 100, days: xs.length };
 }

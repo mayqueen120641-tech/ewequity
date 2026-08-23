@@ -556,6 +556,21 @@
     .ev-row{flex-wrap:wrap;}
   }
 
+  /* 위험 지표 */
+  .risk-box{
+    margin-top:14px;padding:13px 14px;border-radius:11px;
+    background:var(--hover);border:1px solid var(--panel-border);
+  }
+  .risk-box h4{margin:0 0 10px;font-size:12.5px;font-weight:600;}
+  .risk-row{display:flex;gap:12px;align-items:baseline;margin-bottom:9px;flex-wrap:wrap;}
+  .risk-row .rv{font-size:20px;font-weight:700;color:var(--down);}
+  .risk-row .rl{font-size:11.5px;color:var(--sub);}
+  .risk-note{font-size:12px;line-height:1.7;color:var(--text);}
+  .risk-note b{color:var(--down);}
+  .risk-beta{margin-top:12px;padding-top:11px;border-top:1px solid var(--panel-border);}
+  .risk-beta .bv{font-size:16px;font-weight:700;}
+  .risk-foot{font-size:10.5px;color:var(--sub);margin-top:10px;line-height:1.6;}
+
   /* 실적 발표 */
   .call-badge{
     display:inline-block;padding:1px 6px;border-radius:999px;font-size:10px;
@@ -2905,8 +2920,61 @@ function renderChartRead(d) {
       '<div class="rn">1년 최저~최고를 100으로 놓으면 지금은 <b>' + s.pos52 + '</b> 지점입니다. ' +
       '높다고 비싼 것도, 낮다고 싼 것도 아닙니다.</div></div>';
   }
+  html += renderRisk(d);
   document.getElementById('chartRead').innerHTML = html;
   document.getElementById('chartReadPanel').style.display = '';
+}
+
+// 수익률만 보면 위험이 안 보인다. "이 종목을 갖고 있었다면 최악에 얼마나 물렸을까"를
+// 같이 보여주는 게 목적이다 — 매수·매도 신호가 아니라 각오해야 할 폭을 알려주는 것.
+function renderRisk(d) {
+  const r = d.risk;
+  if (!r) return '';
+  const dd = r.drawdown, b = r.beta;
+  if (!dd && !b) return '';
+
+  let html = '<div class="risk-box"><h4>이 종목의 위험은 어느 정도였나</h4>';
+
+  if (dd) {
+    const rec = dd.recoveredDate
+      ? '그 뒤 <b>' + dd.recoveredDate + '</b>에 원래 가격을 되찾았습니다(고점까지 ' + dd.days + '일).'
+      : '<b>아직 그때 고점을 회복하지 못했습니다.</b>';
+    html += '<div class="risk-row">' +
+      '<span class="rv">' + fmtNum(dd.pct, 1) + '%</span>' +
+      '<span class="rl">' + RANGE_LABEL[d.range] + ' 중 최대 낙폭</span></div>' +
+      '<div class="risk-note">' +
+      '고점(' + dd.peakDate + ' · ' + fmtNum(dd.peak, 0) + ')에서 ' +
+      '저점(' + dd.troughDate + ' · ' + fmtNum(dd.trough, 0) + ')까지 ' +
+      '<b>' + fmtNum(Math.abs(dd.pct), 1) + '%</b> 빠진 적이 있습니다. ' + rec +
+      '</div>';
+    // 수익률이 플러스인데 낙폭이 큰 경우 — 초보자가 가장 놓치는 지점
+    if (d.stats.periodPct > 0 && dd.pct < -15) {
+      html += '<div class="risk-note" style="margin-top:8px;">' +
+        '이 기간 수익률은 <b style="color:var(--up)">' + (d.stats.periodPct > 0 ? '+' : '') +
+        fmtNum(d.stats.periodPct, 1) + '%</b>지만, 그 사이 이만큼 빠지는 구간을 견뎌야 했습니다.' +
+        '</div>';
+    }
+  }
+
+  if (b && r.benchName) {
+    const v = b.value;
+    let mean;
+    if (v >= 1.2) mean = '시장보다 <b>크게</b> 움직이는 편입니다.';
+    else if (v <= 0.8 && v > 0) mean = '시장보다 <b>덜</b> 움직이는 편입니다.';
+    else if (v <= 0) mean = '시장과 <b>반대로</b> 움직이는 경향이 있었습니다.';
+    else mean = '시장과 비슷하게 움직이는 편입니다.';
+    html += '<div class="risk-beta">' +
+      '<span class="bv">' + fmtNum(v, 2) + '</span> ' +
+      '<span class="rl">시장 민감도(베타) · ' + esc_(r.benchName) + ' 기준</span>' +
+      '<div class="risk-note" style="margin-top:6px;">' +
+      esc_(r.benchName) + '가 1% 움직일 때 이 종목은 평균 <b>' + fmtNum(Math.abs(v), 2) + '%</b> ' +
+      '움직였습니다. ' + mean + '</div></div>';
+  }
+
+  html += '<div class="risk-foot">지나간 기간을 계산한 값입니다. ' +
+    '앞으로도 같은 폭으로 움직인다는 뜻은 아니고, 좋고 나쁨을 가리는 점수도 아닙니다 — ' +
+    '이 종목을 갖고 있으면 어떤 구간을 지나게 되는지 미리 알아두는 용도입니다.</div></div>';
+  return html;
 }
 
 const RANGE_LABEL = { '1M': '1개월', '3M': '3개월', '6M': '6개월', '1Y': '1년' };
