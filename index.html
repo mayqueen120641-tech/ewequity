@@ -504,6 +504,38 @@
   .pol-term b{display:block;font-size:12px;margin-bottom:4px;}
   .pol-term span{font-size:11.5px;color:var(--sub);line-height:1.6;}
 
+  /* 종목 한 장 요약 */
+  .card-box{margin-top:16px;}
+  .card-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px;}
+  .card-head h3{margin:0;font-size:16px;font-weight:700;}
+  .card-head .cs{font-size:11.5px;color:var(--sub);}
+  .card-line{font-size:13px;color:var(--accent);font-weight:600;margin-bottom:10px;}
+  .card-sum{
+    font-size:13px;line-height:1.75;background:var(--hover);border-radius:10px;
+    padding:13px 14px;margin-bottom:12px;
+  }
+  .card-chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px;}
+  .card-chip{
+    background:var(--panel);border:1px solid var(--panel-border);border-radius:8px;
+    padding:7px 10px;font-size:11.5px;
+  }
+  .card-chip b{display:block;font-size:13px;margin-top:2px;font-variant-numeric:tabular-nums;}
+  .card-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;}
+  .card-col h4{margin:0 0 7px;font-size:12px;font-weight:600;}
+  .card-col.good h4{color:var(--up);}
+  .card-col.care h4{color:var(--down);}
+  .card-col li{
+    font-size:12.5px;line-height:1.65;margin-bottom:7px;list-style:none;
+    padding-left:12px;position:relative;
+  }
+  .card-col li::before{content:'·';position:absolute;left:2px;color:var(--sub);}
+  .card-col ul{margin:0;padding:0;}
+  .card-note{
+    margin-top:12px;font-size:12px;line-height:1.7;color:var(--sub);
+    padding:10px 12px;border-left:2px solid var(--panel-border);
+  }
+  .card-src{font-size:10.5px;color:var(--sub);margin-top:10px;line-height:1.6;}
+
   /* 종목 후보 목록 */
   .cand-head{font-size:12.5px;color:var(--sub);margin-bottom:10px;line-height:1.6;}
   .cand-list{display:flex;flex-direction:column;gap:6px;}
@@ -1043,6 +1075,7 @@
             드물게 못 찾는 종목은 정확한 코드로 입력해주세요.
           </div>
           <div class="search-result" id="quoteResult"></div>
+          <div id="cardWrap" style="display:none;"></div>
         </section>
       </section>
 
@@ -4109,9 +4142,97 @@ function mockQuote(query) {
   };
 }
 
+// ---------- 종목 한 장 요약 ----------
+// 재무·차트·수급·실적이 네 화면에 흩어져 있어서 한 종목을 파악하려면 계속 옮겨다녀야 했다.
+// AI가 그걸 엮어 카드 한 장으로 만든다.
+// ⚠️ "종목 요약"은 곧바로 매수 추천처럼 읽힌다. 그래서 **눈에 띄는 점과 감안할 점을
+//    반드시 함께** 보여주고, 좋고 나쁨을 가리지 않는다.
+let cardSeq = 0;
+
+async function loadStockCard(symbol) {
+  const seq = ++cardSeq;
+  const wrap = document.getElementById('cardWrap');
+  if (!wrap) return;
+  wrap.style.display = '';
+  wrap.innerHTML = '<div class="panel card-box"><div class="loading">' +
+    '이 종목의 재무·차트·수급·실적을 모으는 중… (처음엔 30초쯤 걸릴 수 있어요)</div></div>';
+  let d;
+  try {
+    d = isConfigured() ? await apiGet('card', { symbol: symbol }) : mockCard();
+  } catch (err) {
+    console.error(err);
+    d = { error: '요약을 불러오지 못했어요.' };
+  }
+  if (seq !== cardSeq) return;
+  if (d.error) {
+    wrap.innerHTML = '<div class="panel card-box"><div class="empty">' + esc_(d.error) + '</div></div>';
+    return;
+  }
+
+  const f = d.facts || {};
+  const chip = function (k, v, suffix, cls) {
+    if (v === null || v === undefined) return '';
+    const txt = fmtNum(v, 2) + (suffix || '');
+    return '<div class="card-chip">' + k + '<b' + (cls ? ' class="' + cls + '"' : '') + '>' + txt + '</b></div>';
+  };
+  let chips = '';
+  if (f.periodPct !== null && f.periodPct !== undefined) {
+    chips += '<div class="card-chip">1년 수익률<b class="change ' + changeClass(f.periodPct) + '">' +
+      (f.periodPct > 0 ? '+' : '') + fmtNum(f.periodPct, 1) + '%</b></div>';
+  }
+  if (f.benchPct !== null && f.benchPct !== undefined) {
+    chips += '<div class="card-chip">' + esc_(f.benchName || '지수') + '<b class="change ' +
+      changeClass(f.benchPct) + '">' + (f.benchPct > 0 ? '+' : '') + fmtNum(f.benchPct, 1) + '%</b></div>';
+  }
+  chips += chip('PER', f.per, '배');
+  chips += chip('ROE', f.roe, '%');
+  if (f.drawdown !== null && f.drawdown !== undefined) {
+    chips += '<div class="card-chip">1년 최대 낙폭<b class="change neg">' + fmtNum(f.drawdown, 1) + '%</b></div>';
+  }
+  chips += chip('시장 민감도', f.beta, '');
+  chips += chip('평소 하루', f.avgMove, '%');
+
+  const col = function (cls, title, arr) {
+    if (!arr || !arr.length) return '';
+    return '<div class="card-col ' + cls + '"><h4>' + title + '</h4><ul>' +
+      arr.map(function (t) { return '<li>' + esc_(t) + '</li>'; }).join('') + '</ul></div>';
+  };
+
+  // 무엇으로 만들었는지 밝힌다 — 없는 항목이 있으면 그것도 알려준다.
+  const src = [];
+  if (d.has && d.has.fin) src.push('재무');
+  src.push('차트·위험');
+  if (d.has && d.has.flow) src.push('수급');
+  if (d.has && d.has.earn) src.push('실적');
+
+  wrap.innerHTML =
+    '<div class="panel card-box">' +
+    '<div class="card-head"><h3>' + esc_(d.name) + '</h3>' +
+    '<span class="cs">' + esc_(d.symbol) + ' · 한 장 요약</span></div>' +
+    '<div class="card-line">' + esc_(d.headline) + '</div>' +
+    '<div class="card-sum">' + esc_(d.summary) + '</div>' +
+    (chips ? '<div class="card-chips">' + chips + '</div>' : '') +
+    '<div class="card-cols">' +
+      col('good', '눈에 띄는 점', d.strengths) +
+      col('care', '감안할 점', d.cautions) +
+    '</div>' +
+    (d.note ? '<div class="card-note">' + esc_(d.note) + '</div>' : '') +
+    '<div class="card-src">' + src.join(' · ') + ' 데이터를 AI가 엮어 정리했습니다. ' +
+    '<b>매수·매도 판단이 아니며</b>, 앞으로를 예측하지 않습니다. 자세한 건 각 메뉴에서 볼 수 있어요.</div>' +
+    '</div>';
+}
+
+function mockCard() {
+  return { symbol: 'MOCK', name: '목업 종목', headline: '목업 한 줄 요약',
+    summary: '목업 요약입니다.', strengths: ['좋은 점 예시'], cautions: ['감안할 점 예시'],
+    note: '오해하기 쉬운 점 예시', facts: { periodPct: 12.3, per: 20, roe: 15 }, has: {} };
+}
+
 // 여러 종목이 잡히면 목록으로 보여주고 고르게 한다.
 function renderCandidates(items, query) {
   const el = document.getElementById('quoteResult');
+  const cw = document.getElementById('cardWrap');
+  if (cw) { cw.style.display = 'none'; cardSeq++; }   // 이전 카드가 남아 헷갈리지 않게
   el.className = 'search-result show';
   el.innerHTML =
     '<div class="cand-head">"' + esc_(query) + '"로 <b>' + items.length + '개</b> 종목을 찾았어요. 하나를 골라주세요.</div>' +
@@ -4172,6 +4293,7 @@ async function searchQuote() {
     const cls = changeClass(q.changePct);
     const titleLine = data.name ? (data.name + ' · ' + data.symbol.toUpperCase()) : data.symbol.toUpperCase();
     const already = watchlist.some(function (w) { return w.symbol === data.symbol; });
+    loadStockCard(data.symbol);
     resultEl.className = 'search-result show';
     resultEl.innerHTML =
       '<div class="sr-symbol">' + esc_(titleLine) + '</div>' +

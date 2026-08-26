@@ -18,6 +18,9 @@ function doGet(e) {
       case 'news':
         result = getNews((e.parameter && e.parameter.category) || 'all', noCache);
         break;
+      case 'card':
+        result = getStockCard((e.parameter && e.parameter.symbol) || '', noCache);
+        break;
       case 'search':
         result = searchStocks((e.parameter && e.parameter.q) || '', noCache);
         break;
@@ -5174,4 +5177,218 @@ function searchStocks(query, noCache) {
   const data = { query: q, items: items, us: us };
   cachePut_(cacheKey, data, SEARCH_CACHE_SEC_);
   return data;
+}
+
+// ================= 23. 종목 한 장 요약 =================
+// 지금까지는 한 종목을 알려면 재무·차트·수급·실적 네 화면을 돌아야 했다.
+// 흩어진 걸 모아 **카드 한 장**으로 만든다. 새로 부르는 API는 없고 조합만 한다.
+//
+// ⚠️ "종목 요약"은 곧바로 매수 추천처럼 읽힌다. 좋은 점만 늘어놓으면 더 그렇다.
+//    그래서 스키마에 **눈에 띄는 점**과 **감안할 점**을 둘 다 필수로 두고,
+//    "좋은 종목/나쁜 종목"이라는 판정은 하지 않는다.
+
+var CARD_CACHE_SEC_ = 10800;   // 3시간
+
+var CARD_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    headline: {
+      type: 'string',
+      description: '이 종목의 성격을 한 줄로. 한국어 20자 내외. ' +
+        '예: "실적은 늘고 있지만 주가 출렁임이 큰 종목". 좋다/나쁘다로 단정하지 말 것.'
+    },
+    summary: {
+      type: 'string',
+      description: '초보자에게 이 종목을 설명하는 한국어 3~4문장. 주어진 수치에만 근거할 것.'
+    },
+    strengths: {
+      type: 'array',
+      description: '숫자로 뒷받침되는 눈에 띄는 점 2~3개. 각 항목은 **완결된 한국어 한 문장**이며 ' +
+        '근거 숫자를 문장 안에 자연스럽게 녹여 쓸 것. ' +
+        '문장 끝에 "(5)", "(1.88)"처럼 숫자만 괄호로 덧붙이지 말 것.',
+      items: { type: 'string' }
+    },
+    cautions: {
+      type: 'array',
+      description: '이 종목을 볼 때 감안해야 할 점 2~3개. 각 항목은 **완결된 한국어 한 문장**이며 ' +
+        '근거 숫자를 문장 안에 녹여 쓸 것. 문장 끝에 숫자만 괄호로 덧붙이지 말 것. ' +
+        '억지로 만들지 말고 주어진 수치에서 실제로 읽히는 것만.',
+      items: { type: 'string' }
+    },
+    note: {
+      type: 'string',
+      description: '초보자가 이 종목의 숫자를 보고 오해하기 쉬운 점 한국어 1~2문장.'
+    }
+  },
+  required: ['headline', 'summary', 'strengths', 'cautions', 'note'],
+  additionalProperties: false
+};
+
+// 여러 소스를 모은다. 하나가 실패해도 나머지로 카드를 만든다.
+function gatherStockFacts_(symbol) {
+  const isKr = !!krCode_(symbol);
+  const chart = safe_(function () { return getChart(symbol, '1Y', false); });
+  if (!chart || chart.error) return null;
+
+  const sym = chart.symbol;
+  const fin = safe_(function () {
+    return isKr ? getFinance(krCode_(sym), false) : getUsFinance(sym, false);
+  });
+  const flow = isKr ? safe_(function () { return getFlow(sym, false); }) : null;
+  const earn = !isKr ? safe_(function () { return getEarningsHistory(sym, false); }) : null;
+
+  return {
+    symbol: sym, name: chart.name, isKr: isKr,
+    chart: chart,
+    fin: (fin && !fin.error) ? fin : null,
+    flow: (flow && !flow.error && flow.days && flow.days.length) ? flow : null,
+    earn: (earn && !earn.error && earn.rows) ? earn : null
+  };
+}
+
+// 모은 사실을 프롬프트용 텍스트로. 없는 항목은 넣지 않는다(모델이 지어내지 않게).
+function stockFactsText_(f) {
+  const s = f.chart.stats, r = f.chart.risk || {};
+  const L = [];
+  L.push('[가격]');
+  L.push('- 현재가: ' + s.close + (f.isKr ? '원' : '달러'));
+  L.push('- 최근 1년 수익률: ' + s.periodPct + '%');
+  if (f.chart.bench) L.push('- 같은 기간 ' + f.chart.bench.name + ': ' + f.chart.bench.periodPct + '%');
+  L.push('- 이 종목의 평소 하루 변동폭: ±' + s.avgMove + '%');
+  if (s.pos52 !== null) L.push('- 1년 최저~최고 중 현재 위치: ' + s.pos52 + '/100');
+  if (r.drawdown) {
+    L.push('- 1년 중 최대 낙폭: ' + r.drawdown.pct + '% (' + r.drawdown.peakDate + ' → ' +
+      r.drawdown.troughDate + ')' + (r.drawdown.recoveredDate ? ', ' + r.drawdown.recoveredDate + '에 회복' : ', 아직 미회복'));
+  }
+  if (r.beta) L.push('- 시장 민감도(베타): ' + r.beta.value + ' (' + r.benchName + ' 기준)');
+
+  if (f.fin) {
+    const v = f.fin.valuation || {};
+    L.push('');
+    L.push('[재무 — ' + (f.isKr ? f.fin.year + '년 사업보고서' : '최근 12개월 TTM') + ']');
+    if (v.per !== null && v.per !== undefined) L.push('- PER: ' + v.per + '배');
+    else if (v.loss) L.push('- PER: 없음(당기순손실)');
+    if (v.pbr !== null && v.pbr !== undefined) L.push('- PBR: ' + v.pbr + '배');
+    if (v.roe !== null && v.roe !== undefined) L.push('- ROE: ' + v.roe + '%');
+    if (v.opMargin !== null && v.opMargin !== undefined) L.push('- 영업이익률: ' + v.opMargin + '%');
+    if (v.debtRatio !== null && v.debtRatio !== undefined) L.push('- 부채비율: ' + v.debtRatio + '%');
+    const ex = f.fin.extra;
+    if (ex && ex.revGrowth !== null && ex.revGrowth !== undefined) L.push('- 매출 성장률: ' + ex.revGrowth + '%');
+    const tr = f.fin.trend;
+    if (tr && tr.length) {
+      const rev = tr.filter(function (x) { return x.revenue != null; })
+        .map(function (x) { return x.year + '년 ' + Math.round(x.revenue / 1e11) / 10 + '조'; });
+      if (rev.length) L.push('- 매출 추이: ' + rev.join(' → '));
+    }
+  }
+
+  if (f.flow) {
+    const t = f.flow.totals;
+    const man = function (v) { return (v > 0 ? '+' : '') + Math.round(v / 10000) + '만주'; };
+    L.push('');
+    L.push('[수급 — 최근 ' + t.days + '거래일 누적 순매수]');
+    L.push('- 외국인 ' + man(t.foreign) + ', 기관 ' + man(t.inst) + ', 개인 ' + man(t.indiv));
+  }
+
+  if (f.earn && f.earn.total) {
+    L.push('');
+    L.push('[실적 — 발표 완료 ' + f.earn.total + '개 분기]');
+    L.push('- 예상 상회 ' + f.earn.beats + '회, 하회 ' + f.earn.misses + '회');
+    const up = (f.earn.rows || []).filter(function (x) { return !x.done; })[0];
+    if (up) L.push('- 다음 발표 예정: ' + up.date);
+  }
+
+  const evs = (f.chart.events || []).filter(function (e) { return e.kind === 'earnings'; });
+  if (evs.length) L.push('- 이 기간 실적 발표일: ' + evs.map(function (e) { return e.date; }).join(', '));
+  return L.join('\n');
+}
+
+function getStockCard(symbol, noCache) {
+  const raw = String(symbol || '').trim();
+  if (!raw) return { error: '종목을 입력해주세요.' };
+
+  const key = getProp_('ANTHROPIC_API_KEY');
+  if (!key) return { error: 'AI 요약은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
+
+  const f = gatherStockFacts_(raw);
+  if (!f) return { error: '이 종목의 데이터를 모으지 못했어요.' };
+
+  // 가격이 움직이면 요약도 달라져야 한다. 수치를 캐시 키에 넣어 자동 만료시킨다.
+  const s = f.chart.stats;
+  const cacheKey = 'card_' + f.symbol.toLowerCase() + '_' + [s.close, s.periodPct].join('_');
+  const cached = noCache ? null : cacheGet_(cacheKey);
+  if (cached) return cached;
+
+  const facts = stockFactsText_(f);
+  const r = callClaudeCard_(key, f, facts);
+  if (!r) return { error: '요약을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  // 모델이 문장 끝에 "(5)", "(1.88)"처럼 숫자만 괄호로 붙이는 버릇이 있다.
+  // 프롬프트로도 막았지만 새면 화면이 깨져 보이므로 여기서 한 번 더 걷어낸다.
+  const trimTail = function (t) {
+    // 끝에 마침표가 더 붙는 경우도 있다: "... 큽니다 (1.88)."
+    return String(t || '').replace(/\s*\((?:[\d.,\s]+)\)\s*([.。])?\s*$/, '$1').trim();
+  };
+  const data = {
+    symbol: f.symbol, name: f.name, market: f.isKr ? 'kr' : 'us',
+    headline: r.headline, summary: r.summary,
+    strengths: (r.strengths || []).map(trimTail),
+    cautions: (r.cautions || []).map(trimTail),
+    note: r.note,
+    // 화면에서 칩으로 띄울 핵심 수치. AI가 아니라 우리가 계산한 값이다.
+    facts: {
+      periodPct: s.periodPct, benchPct: f.chart.bench ? f.chart.bench.periodPct : null,
+      benchName: f.chart.bench ? f.chart.bench.name : null,
+      per: f.fin && f.fin.valuation ? f.fin.valuation.per : null,
+      roe: f.fin && f.fin.valuation ? f.fin.valuation.roe : null,
+      drawdown: (f.chart.risk && f.chart.risk.drawdown) ? f.chart.risk.drawdown.pct : null,
+      beta: (f.chart.risk && f.chart.risk.beta) ? f.chart.risk.beta.value : null,
+      avgMove: s.avgMove
+    },
+    has: { fin: !!f.fin, flow: !!f.flow, earn: !!(f.earn && f.earn.total) },
+    at: new Date().toISOString()
+  };
+  cachePut_(cacheKey, data, CARD_CACHE_SEC_);
+  return data;
+}
+
+function callClaudeCard_(apiKey, f, facts) {
+  const prompt =
+    '[' + f.name + ' (' + f.symbol + ')]\n' + facts + '\n\n' +
+    'headline에는 이 종목의 성격을 한 줄로 요약해줘(20자 내외).\n' +
+    'summary에는 초보자가 이 종목을 이해할 수 있게 3~4문장으로 설명해줘.\n' +
+    'strengths에는 숫자로 뒷받침되는 눈에 띄는 점을, cautions에는 감안해야 할 점을 각각 2~3개.\n' +
+    'note에는 이 종목의 숫자를 보고 초보자가 오해하기 쉬운 점을 짚어줘.\n\n' +
+    '⚠️ 반드시 지킬 것:\n' +
+    '- **매수/매도 추천, 목표가, "지금이 기회" 같은 말 금지.** 이 카드는 판단을 돕는 자료지 판단 자체가 아니다.\n' +
+    '- **"좋은 종목", "나쁜 종목", "저평가", "고평가"로 단정하지 마.** 사실과 그 의미까지만.\n' +
+    '- **앞으로 어떻게 될지 예측하지 마.** 지나간 수치만 설명해.\n' +
+    '- 주어진 수치만 쓰고 없는 숫자를 지어내지 마. 업종 평균이나 경쟁사를 아는 척하지 마.\n' +
+    '- cautions를 억지로 채우지 마. 실제로 수치에서 읽히는 것만.\n' +
+    '- 어려운 말은 괄호로 짧게 풀어줘(예: PER(주가수익비율)).';
+
+  let res;
+  try {
+    res = UrlFetchApp.fetch(ANTHROPIC_URL_, {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 2000,
+        output_config: { format: { type: 'json_schema', schema: CARD_SCHEMA_ } },
+        system: '너는 초보 투자자에게 종목을 쉽게 설명해주는 도우미야. ' +
+          '흩어진 숫자를 엮어 이해를 돕되, 투자 권유나 예측은 절대 하지 않는다.',
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) { return null; }
+  if (res.getResponseCode() >= 400) {
+    console.log('callClaudeCard_: HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 200));
+    return null;
+  }
+  const json = JSON.parse(res.getContentText());
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
+  const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!tb) return null;
+  try { return JSON.parse(tb.text); } catch (err) { return null; }
 }
