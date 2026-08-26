@@ -5342,13 +5342,19 @@ function getStockCard(symbol, noCache) {
       per: f.fin && f.fin.valuation ? f.fin.valuation.per : null,
       roe: f.fin && f.fin.valuation ? f.fin.valuation.roe : null,
       drawdown: (f.chart.risk && f.chart.risk.drawdown) ? f.chart.risk.drawdown.pct : null,
+      // MDD는 숫자 하나보다 "언제부터 언제까지, 회복했는지"가 같이 있어야 체감된다.
+      mdd: (f.chart.risk && f.chart.risk.drawdown) ? f.chart.risk.drawdown : null,
       beta: (f.chart.risk && f.chart.risk.beta) ? f.chart.risk.beta.value : null,
       avgMove: s.avgMove
     },
     has: { fin: !!f.fin, flow: !!f.flow, earn: !!(f.earn && f.earn.total) },
     at: new Date().toISOString()
   };
-  cachePut_(cacheKey, data, CARD_CACHE_SEC_);
+  // ⚠️ 지수 비교나 베타가 빠진 채로 3시간을 캐시하면, **한 번의 일시적 조회 실패가
+  // 3시간짜리 반쪽 카드**가 된다(실측: 야후 지수 호출이 가끔 실패한다).
+  // 빠진 게 있으면 짧게만 캐시해 다음 조회에서 스스로 회복하게 한다.
+  const complete = data.facts.benchPct !== null && data.facts.beta !== null;
+  cachePut_(cacheKey, data, complete ? CARD_CACHE_SEC_ : 300);
   return data;
 }
 
@@ -5365,7 +5371,9 @@ function callClaudeCard_(apiKey, f, facts) {
     '- **앞으로 어떻게 될지 예측하지 마.** 지나간 수치만 설명해.\n' +
     '- 주어진 수치만 쓰고 없는 숫자를 지어내지 마. 업종 평균이나 경쟁사를 아는 척하지 마.\n' +
     '- cautions를 억지로 채우지 마. 실제로 수치에서 읽히는 것만.\n' +
-    '- 어려운 말은 괄호로 짧게 풀어줘(예: PER(주가수익비율)).';
+    '- 어려운 말은 괄호로 짧게 풀어줘(예: PER(주가수익비율)).\n' +
+    '- 최대 낙폭을 언급할 땐 **"최대 낙폭(MDD)"**처럼 용어를 같이 써줘 — ' +
+    '사용자가 다른 곳에서 이 말을 봤을 때 알아볼 수 있게.';
 
   let res;
   try {

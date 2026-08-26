@@ -530,6 +530,11 @@
   }
   .card-col li::before{content:'·';position:absolute;left:2px;color:var(--sub);}
   .card-col ul{margin:0;padding:0;}
+  .card-mdd{
+    font-size:12px;line-height:1.7;color:var(--sub);margin:-4px 0 14px;
+    padding:10px 12px;border-radius:9px;background:var(--hover);
+  }
+  .card-mdd b{color:var(--text);}
   .card-note{
     margin-top:12px;font-size:12px;line-height:1.7;color:var(--sub);
     padding:10px 12px;border-left:2px solid var(--panel-border);
@@ -4187,7 +4192,8 @@ async function loadStockCard(symbol) {
   chips += chip('PER', f.per, '배');
   chips += chip('ROE', f.roe, '%');
   if (f.drawdown !== null && f.drawdown !== undefined) {
-    chips += '<div class="card-chip">1년 최대 낙폭<b class="change neg">' + fmtNum(f.drawdown, 1) + '%</b></div>';
+    // "MDD"라는 말을 다른 데서 봤을 때 알아볼 수 있게 용어를 같이 적는다.
+    chips += '<div class="card-chip">최대 낙폭 (MDD)<b class="change neg">' + fmtNum(f.drawdown, 1) + '%</b></div>';
   }
   chips += chip('시장 민감도', f.beta, '');
   chips += chip('평소 하루', f.avgMove, '%');
@@ -4212,6 +4218,7 @@ async function loadStockCard(symbol) {
     '<div class="card-line">' + esc_(d.headline) + '</div>' +
     '<div class="card-sum">' + esc_(d.summary) + '</div>' +
     (chips ? '<div class="card-chips">' + chips + '</div>' : '') +
+    mddLine(f.mdd) +
     '<div class="card-cols">' +
       col('good', '눈에 띄는 점', d.strengths) +
       col('care', '감안할 점', d.cautions) +
@@ -4222,10 +4229,27 @@ async function loadStockCard(symbol) {
     '</div>';
 }
 
+// MDD는 숫자 하나만 보면 감이 안 온다. **언제부터 언제까지 빠졌고 회복했는지**가
+// 같이 있어야 "이 종목을 갖고 있었으면 이런 구간을 지났겠구나"가 와닿는다.
+function mddLine(m) {
+  if (!m) return '';
+  const rec = m.recoveredDate
+    ? '<b>' + m.recoveredDate + '</b>에 원래 가격을 되찾았습니다(고점까지 ' + m.days + '일).'
+    : '<b>아직 그때 고점을 회복하지 못했습니다.</b>';
+  return '<div class="card-mdd">' +
+    '<b>최대 낙폭(MDD)</b>이란 고점에서 저점까지 가장 크게 빠진 폭입니다. ' +
+    '이 종목은 <b>' + m.peakDate + '</b>(' + fmtNum(m.peak, 0) + ')에서 ' +
+    '<b>' + m.troughDate + '</b>(' + fmtNum(m.trough, 0) + ')까지 ' +
+    '<b class="change neg">' + fmtNum(m.pct, 1) + '%</b> 빠졌고, ' + rec +
+    '</div>';
+}
+
 function mockCard() {
   return { symbol: 'MOCK', name: '목업 종목', headline: '목업 한 줄 요약',
     summary: '목업 요약입니다.', strengths: ['좋은 점 예시'], cautions: ['감안할 점 예시'],
-    note: '오해하기 쉬운 점 예시', facts: { periodPct: 12.3, per: 20, roe: 15 }, has: {} };
+    note: '오해하기 쉬운 점 예시', facts: { periodPct: 12.3, per: 20, roe: 15, drawdown: -20.2,
+      mdd: { pct: -20.2, peak: 150, trough: 120, peakDate: '2026-01-05', troughDate: '2026-03-10', recoveredDate: null, days: 64 } },
+    has: {} };
 }
 
 // 여러 종목이 잡히면 목록으로 보여주고 고르게 한다.
