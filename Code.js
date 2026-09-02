@@ -2825,7 +2825,7 @@ function getFinAi(symbol, noCache) {
   const code = krCode_(symbol) || String(symbol || '').trim().toUpperCase();
   if (!code) return { error: '종목 코드가 없습니다.' };
 
-  const key = getProp_('ANTHROPIC_API_KEY');
+  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
   if (!key) return { error: 'AI 해설은 ANTHROPIC_API_KEY가 설정돼야 동작합니다.' };
 
   const fin = krCode_(code) ? getFinance(code, noCache) : getUsFinance(code, noCache);
@@ -4585,30 +4585,32 @@ var POLICY_SCHEMA_ = {
 
 function refreshPolicyBrief() {
   const key = getProp_('ANTHROPIC_API_KEY');
-  if (!key) { Logger.log('refreshPolicyBrief: ANTHROPIC_API_KEY 없음 — 건너뜀'); return; }
+  if (!key) return 'ANTHROPIC_API_KEY 없음';
 
   var feed;
   try {
-    feed = parseFedFeed_(UrlFetchApp.fetch(FED_RSS_,
-      { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true }).getContentText());
+    const rss = UrlFetchApp.fetch(FED_RSS_, { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true });
+    if (rss.getResponseCode() >= 400) return 'RSS HTTP ' + rss.getResponseCode();
+    feed = parseFedFeed_(rss.getContentText());
   } catch (err) {
     Logger.log('refreshPolicyBrief: RSS 실패 - ' + err);
-    return;
+    return 'RSS 연결 실패: ' + String(err).slice(0, 80);
   }
+  if (!feed.length) return 'RSS 파싱 결과 0건';
   const stmts = fedStatements_(feed);
-  if (!stmts.length) { Logger.log('refreshPolicyBrief: 성명서 없음'); return; }
+  if (!stmts.length) return 'RSS에 FOMC 성명서 없음(' + feed.length + '건 중)';
 
   const stored = safe_(function () {
     return JSON.parse(PropertiesService.getScriptProperties().getProperty(POLICY_BRIEF_PROP_));
   });
   // 같은 성명서면 다시 만들지 않는다(AI 호출 절약).
-  if (stored && stored.link === stmts[0].link) { Logger.log('refreshPolicyBrief: 변경 없음'); return; }
+  if (stored && stored.link === stmts[0].link) return null;   // 이미 최신
 
   const body = safe_(function () {
     return fedStatementText_(UrlFetchApp.fetch(stmts[0].link,
       { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true }).getContentText());
   });
-  if (!body) { Logger.log('refreshPolicyBrief: 본문 추출 실패'); return; }
+  if (!body) return '성명서 본문을 가져오지 못함';
 
   const prevBody = stmts[1] ? safe_(function () {
     return fedStatementText_(UrlFetchApp.fetch(stmts[1].link,
@@ -4616,7 +4618,10 @@ function refreshPolicyBrief() {
   }) : null;
 
   const r = callClaudePolicy_(key, stmts[0], body, prevBody);
-  if (!r) { Logger.log('refreshPolicyBrief: AI 요약 실패'); return; }
+  if (!r) {
+    return 'AI 요약 생성 실패 — ' +
+      (PropertiesService.getScriptProperties().getProperty('POLICY_AI_ERR') || '응답 파싱 실패');
+  }
 
   // 최근 발표 이력도 같이 저장한다(요청 경로에서 RSS를 다시 부르지 않기 위해).
   const recent = feed.slice(0, 6).map(function (f) {
@@ -4630,6 +4635,7 @@ function refreshPolicyBrief() {
     at: new Date().toISOString()
   }));
   Logger.log('✅ 통화정책 브리핑 갱신: ' + stmts[0].pubDate);
+  return null;
 }
 
 function callClaudePolicy_(apiKey, meta, body, prevBody) {
@@ -4666,9 +4672,13 @@ function callClaudePolicy_(apiKey, meta, body, prevBody) {
     });
   } catch (err) { return null; }
   if (res.getResponseCode() >= 400) {
-    console.log('callClaudePolicy_: HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 200));
+    const msg = 'HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 300);
+    console.log('callClaudePolicy_: ' + msg);
+    // 로그를 읽을 수 없으므로 원인을 속성에 남긴다(응답으로 확인하기 위함).
+    PropertiesService.getScriptProperties().setProperty('POLICY_AI_ERR', msg);
     return null;
   }
+  PropertiesService.getScriptProperties().deleteProperty('POLICY_AI_ERR');
   const json = JSON.parse(res.getContentText());
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
   const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
@@ -4759,16 +4769,51 @@ function rssDate_(s) {
   return isNaN(t.getTime()) ? null : Utilities.formatDate(t, 'Asia/Seoul', 'yyyy-MM-dd');
 }
 
+var POLICY_TRY_PROP_ = 'POLICY_TRY_AT';
+var POLICY_RETRY_MS_ = 3600000;   // 실패해도 1시간에 한 번만 다시 시도   // 실패해도 1시간에 한 번만 다시 시도
+
+// 트리거가 아직 안 걸렸어도 화면이 비어 있지 않게, **없으면 한 번은 직접 만든다.**
+// 요청 경로에서 느린 작업을 하지 않는다는 원칙에는 어긋나지만, 성명서는 연 8회만 나오므로
+// 이건 **한 번만 치르는 비용**이다(그 뒤로는 저장값을 읽는다). 실패가 반복될 때 매번
+// 30초씩 매달리지 않도록 시도 간격을 둔다.
+function ensurePolicyBrief_() {
+  const props = PropertiesService.getScriptProperties();
+  const has = props.getProperty(POLICY_BRIEF_PROP_);
+  if (has) return;
+  const last = Number(props.getProperty(POLICY_TRY_PROP_) || 0);
+  if (Date.now() - last < POLICY_RETRY_MS_) return;
+  props.setProperty(POLICY_TRY_PROP_, String(Date.now()));
+  const why = safe_(function () { return refreshPolicyBrief(); });
+  if (why) props.setProperty('POLICY_LAST_ERR', why);
+}
+
+// 내부 오류를 사용자용 문구로 바꾼다. 결제·키 같은 내부 사정은 밖으로 내지 않는다.
+function friendlyPolicyError_(raw) {
+  if (!raw) return null;
+  const t = String(raw);
+  if (/credit balance|billing|quota/i.test(t)) {
+    return 'AI 요약을 만들 수 없는 상태예요. 잠시 후 다시 시도해주세요.';
+  }
+  if (/RSS/i.test(t)) return '연준 자료를 가져오지 못했어요. 잠시 후 다시 시도해주세요.';
+  return '요약을 준비하지 못했어요. 잠시 후 다시 시도해주세요.';
+}
+
 function getPolicy(noCache) {
   const cached = noCache ? null : cacheGet_('policy');
   if (cached) return cached;
 
+  ensurePolicyBrief_();
   const brief = safe_(function () {
     return JSON.parse(PropertiesService.getScriptProperties().getProperty(POLICY_BRIEF_PROP_));
   });
 
   const data = {
     fomc: brief || null,
+    // 왜 없는지 화면에서 알려주기 위해(그리고 로그를 읽을 수 없어서) 마지막 실패 이유를 같이 준다.
+    // ⚠️ 원문 오류를 그대로 내보내면 공개 URL에 결제 상태 같은 내부 사정이 드러난다.
+    // 사용자가 이해할 수 있는 문구로 바꾸고, 자세한 건 서버 로그에만 남긴다.
+    fomcError: brief ? null : friendlyPolicyError_(
+      PropertiesService.getScriptProperties().getProperty('POLICY_LAST_ERR')),
     recent: (brief && brief.recent) || [],
     topics: policyNews_(),
     terms: POLICY_TERMS_
