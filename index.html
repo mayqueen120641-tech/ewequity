@@ -20,6 +20,46 @@
     --sidebar:#FFFDFA;
     --hover:#F5EDE0;
     --shadow:0 1px 3px rgba(74,59,46,.06), 0 1px 2px rgba(74,59,46,.04);
+    /* 안내 상자 / 차트용 — 다크에서 따로 바꿔야 하므로 변수로 뺀다 */
+    --note-bg:#FDF6E3;
+    --note-border:#E8D9B0;
+    --note-text:#8A6D3B;
+    --grid:rgba(74,59,46,.08);
+    --zero-line:rgba(74,59,46,.20);
+    --axis-text:#9A8F7F;
+    --ma60:#9BB0C9;
+    --gauge-mid:#E8DCC8;
+    --muted:#C4B5A2;
+    --mascot-opacity:1;
+  }
+
+  /* 다크 모드. 검정이 아니라 따뜻한 갈빛 회색을 쓴다 — 크림 톤의 밤 버전에 가깝게.
+     상승=빨강 / 하락=파랑(국내 관례)은 유지하되, 어두운 바탕에서 묻히지 않게 밝혔다. */
+  :root[data-theme="dark"]{
+    --bg:#1C1917;
+    --panel:#262220;
+    --panel-border:#3A3431;
+    --text:#EDE4D8;
+    --sub:#9C8F80;
+    --up:#F2705A;
+    --down:#6BA3E8;
+    --accent:#D9B072;
+    --accent2:#6BA3E8;
+    --accent3:#8FBF9E;
+    --sidebar:#211D1B;
+    --hover:#332D29;
+    --shadow:0 1px 3px rgba(0,0,0,.4), 0 1px 2px rgba(0,0,0,.3);
+    --note-bg:#332B1E;
+    --note-border:#4D4130;
+    --note-text:#D9B072;
+    --grid:rgba(237,228,216,.09);
+    --zero-line:rgba(237,228,216,.22);
+    --axis-text:#9C8F80;
+    --ma60:#7A8FA8;
+    /* 마스코트는 흰 배경에 그려진 PNG라 어두운 화면에서 눈이 부시다 */
+    --gauge-mid:#4A423C;
+    --muted:#6F635A;
+    --mascot-opacity:.82;
   }
   *{box-sizing:border-box;}
   body{
@@ -96,7 +136,7 @@
 
   .setup-banner{
     display:none;
-    background:#FDF6E3;border:1px solid #E8D9B0;color:#8A6D3B;
+    background:var(--note-bg);border:1px solid var(--note-border);color:var(--note-text);
     padding:12px 16px;border-radius:10px;font-size:13px;margin-bottom:18px;line-height:1.6;
   }
   .setup-banner code{background:#00000010;padding:2px 6px;border-radius:4px;}
@@ -285,7 +325,7 @@
   }
   .cal-day:hover:not(.blank){background:var(--hover);}
   .cal-day.blank{cursor:default;}
-  .cal-day.muted{color:#C4B5A2;}
+  .cal-day.muted{color:var(--muted);}
   .cal-day.today{border-color:var(--accent);font-weight:700;}
   .cal-day.selected{background:var(--accent);color:#fff;font-weight:700;}
   .cal-day.selected .cal-dot{background:#fff;}
@@ -379,7 +419,7 @@
   .chat-reset:hover{background:var(--hover);color:var(--text);}
   .ask-notice{
     margin-top:10px;padding:9px 12px;border-radius:8px;font-size:11.5px;line-height:1.6;
-    background:#FDF6E3;border:1px solid #E8D9B0;color:#8A6D3B;
+    background:var(--note-bg);border:1px solid var(--note-border);color:var(--note-text);
   }
   .ask-src{margin-top:12px;padding-top:10px;border-top:1px solid var(--panel-border);}
   .ask-src h4{margin:0 0 6px;font-size:11px;color:var(--sub);font-weight:500;}
@@ -568,7 +608,10 @@
   .chart-legend .lg-up{background:var(--up);}
   .chart-legend .lg-down{background:var(--down);}
   .chart-legend .lg-ma20{background:var(--accent);}
-  .chart-legend .lg-ma60{background:#9BB0C9;}
+  .chart-legend .lg-ma60{background:var(--ma60);}
+  /* 흰 배경에 그려진 PNG라 어두운 화면에서 도드라진다 */
+  .mascot, .mascot img, img[src*="sheep-"]{opacity:var(--mascot-opacity);}
+
   .chart-legend .lg-ev{background:var(--accent3, #7BA05B);border-radius:50%;}
   /* 숫자를 문장으로 번역한 카드 */
   .read-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;}
@@ -577,11 +620,11 @@
   .read-card .rv{font-size:14px;font-weight:600;line-height:1.5;}
   .read-card .rn{font-size:11.5px;color:var(--sub);line-height:1.6;margin-top:5px;}
   /* 52주 위치 게이지 */
-  .gauge{height:8px;border-radius:999px;background:linear-gradient(90deg,var(--down),#E8DCC8,var(--up));position:relative;margin:10px 0 6px;}
+  .gauge{height:8px;border-radius:999px;background:linear-gradient(90deg,var(--down),var(--gauge-mid),var(--up));position:relative;margin:10px 0 6px;}
   .gauge i{position:absolute;top:-3px;width:3px;height:14px;border-radius:2px;background:var(--text);transform:translateX(-50%);}
   .gauge-ends{display:flex;justify-content:space-between;font-size:10.5px;color:var(--sub);}
   .chart-legend .lg-stock{background:var(--accent);}
-  .chart-legend .lg-bench{background:#9BB0C9;}
+  .chart-legend .lg-bench{background:var(--ma60);}
   .cmp-verdict{
     margin-top:10px;padding:11px 12px;border-radius:9px;background:var(--hover);
     font-size:12.5px;line-height:1.65;
@@ -741,7 +784,7 @@
   }
   .code-warn{
     font-size:12.5px;line-height:1.7;padding:11px 12px;border-radius:9px;
-    background:#FDF6E3;border:1px solid #E8D9B0;color:#8A6D3B;margin-bottom:12px;
+    background:var(--note-bg);border:1px solid var(--note-border);color:var(--note-text);margin-bottom:12px;
   }
   .code-row{display:flex;gap:8px;margin-bottom:12px;}
   .code-row input{
@@ -889,6 +932,7 @@
       </div>
       <div class="updated-wrap">
         <div class="updated">마지막 업데이트<br><b id="updatedAt">-</b></div>
+        <button id="themeBtn" class="refresh-btn" type="button" title="밝게 / 어둡게">🌙</button>
         <button id="refreshBtn" class="refresh-btn" type="button" title="캐시를 건너뛰고 지금 바로 새 데이터를 가져옵니다">🔄 새로고침</button>
       </div>
     </div>
@@ -1739,7 +1783,7 @@ function drawDualLineChart_(canvas, series) {
   const plotH = Math.max(1, cssHeight - pad.top - pad.bottom);
 
   // 격자선
-  ctx.strokeStyle = '#1c2942';
+  ctx.strokeStyle = themeColor('--grid', 'rgba(74,59,46,.08)');
   ctx.lineWidth = 1;
   const rows = 4;
   for (let i = 0; i <= rows; i++) {
@@ -1752,7 +1796,7 @@ function drawDualLineChart_(canvas, series) {
 
   const n = Math.max.apply(null, series.map(function (s) { return s.data.length; }).concat([0]));
   if (!n) {
-    ctx.fillStyle = '#8593ab';
+    ctx.fillStyle = themeColor('--axis-text', '#9A8F7F');
     ctx.font = '13px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('표시할 데이터가 없습니다.', cssWidth / 2, cssHeight / 2);
@@ -1788,7 +1832,7 @@ function drawDualLineChart_(canvas, series) {
   // x축 날짜 라벨 (처음/중간/끝)
   const longest = series.reduce(function (a, b) { return a.data.length >= b.data.length ? a : b; });
   const labels = longest.data.map(function (d) { return d.date; });
-  ctx.fillStyle = '#8593ab';
+  ctx.fillStyle = themeColor('--axis-text', '#9A8F7F');
   ctx.font = '11px sans-serif';
   ctx.textBaseline = 'top';
   const idxs = [0, Math.floor((labels.length - 1) / 2), labels.length - 1];
@@ -1805,7 +1849,7 @@ function drawDualLineChart_(canvas, series) {
   series.forEach(function (s) {
     ctx.fillStyle = s.color;
     ctx.fillRect(lx, 4, 10, 10);
-    ctx.fillStyle = '#8593ab';
+    ctx.fillStyle = themeColor('--axis-text', '#9A8F7F');
     ctx.textAlign = 'left';
     ctx.font = '11px sans-serif';
     ctx.fillText(s.label, lx + 14, 13);
@@ -2822,9 +2866,23 @@ let chartSymbol = '';
 let chartReqSeq = 0;
 let chartHitAreas = [];   // 사건 점을 눌렀는지 판정하려고 좌표를 기억해 둔다
 
-const CAND = { up: '#D9614C', down: '#4A7FD0', ma20: '#C9A063', ma60: '#9BB0C9', ev: '#7BA05B' };
+// 캔버스는 CSS를 모른다 — 색을 그리는 순간에 박아 넣기 때문에, 테마를 바꾸면
+// 화면은 어두워져도 차트만 밝은 색으로 남는다. 그래서 그릴 때마다 변수를 읽어온다.
+function themeColor(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+function candColors() {
+  return {
+    up: themeColor('--up', '#D9614C'), down: themeColor('--down', '#4A7FD0'),
+    ma20: themeColor('--accent', '#C9A063'), ma60: themeColor('--ma60', '#9BB0C9'),
+    ev: themeColor('--accent3', '#7BA05B')
+  };
+}
 
 function drawCandles(canvas, d) {
+  const CAND = candColors();   // 그릴 때마다 현재 테마 색을 읽는다
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.parentElement.clientWidth;
   if (!cssW) return;                       // 숨겨진 동안엔 그리지 않는다
@@ -2867,9 +2925,9 @@ function drawCandles(canvas, d) {
   for (let i = 0; i <= 4; i++) {
     const yy = pad.t + (plotH / 4) * i;
     const val = hi - ((hi - lo) / 4) * i;
-    ctx.strokeStyle = 'rgba(0,0,0,.06)';
+    ctx.strokeStyle = themeColor('--grid', 'rgba(74,59,46,.08)');
     ctx.beginPath(); ctx.moveTo(pad.l, yy); ctx.lineTo(cssW - pad.r, yy); ctx.stroke();
-    ctx.fillStyle = '#9A8F7F';
+    ctx.fillStyle = themeColor('--axis-text', '#9A8F7F');
     ctx.fillText(fmtNum(Math.round(val), 0), cssW - pad.r + 6, yy + 3);
   }
 
@@ -2909,7 +2967,7 @@ function drawCandles(canvas, d) {
   });
 
   // 날짜 눈금 (양 끝 + 가운데)
-  ctx.fillStyle = '#9A8F7F';
+  ctx.fillStyle = themeColor('--axis-text', '#9A8F7F');
   ctx.textAlign = 'center';
   [0, Math.floor(rows.length / 2), rows.length - 1].forEach(function (i) {
     ctx.fillText(rows[i][0].slice(5), x(i), cssH - 26);
@@ -3169,18 +3227,18 @@ function drawCompare(canvas, d) {
   const x = function (i) { return pad.l + (plotW / Math.max(1, A.length - 1)) * i; };
 
   // 0% 기준선 — 이 선 위면 올랐고 아래면 내렸다는 뜻이라 가장 중요한 선이다
-  ctx.strokeStyle = 'rgba(0,0,0,.18)';
+  ctx.strokeStyle = themeColor('--zero-line', 'rgba(74,59,46,.20)');
   ctx.setLineDash([3, 3]);
   ctx.beginPath(); ctx.moveTo(pad.l, y(0)); ctx.lineTo(cssW - pad.r, y(0)); ctx.stroke();
   ctx.setLineDash([]);
   ctx.font = '10px -apple-system, sans-serif';
-  ctx.fillStyle = '#9A8F7F'; ctx.textAlign = 'left';
+  ctx.fillStyle = themeColor('--axis-text', '#9A8F7F'); ctx.textAlign = 'left';
   ctx.fillText('0%', cssW - pad.r + 6, y(0) + 3);
   [hi, lo].forEach(function (v) {
     ctx.fillText((v > 0 ? '+' : '') + v.toFixed(0) + '%', cssW - pad.r + 6, y(v) + 3);
   });
 
-  [[B, '#9BB0C9', 1.5], [A, '#C9A063', 2]].forEach(function (pair) {
+  [[B, themeColor('--ma60', '#9BB0C9'), 1.5], [A, themeColor('--accent', '#C9A063'), 2]].forEach(function (pair) {
     const arr = pair[0];
     ctx.strokeStyle = pair[1]; ctx.lineWidth = pair[2];
     ctx.beginPath();
@@ -4502,6 +4560,65 @@ async function manualRefresh() {
     btn.textContent = '🔄 새로고침';
   }
 }
+// 테마가 바뀌면 이미 그려둔 캔버스는 옛 색 그대로다. 화면에 있는 것만 다시 그린다.
+// (숨겨진 캔버스는 폭이 0이라 지금 그려봐야 깨지고, showPage가 열릴 때 다시 그린다.)
+function redrawVisibleCharts() {
+  try {
+    if (lastHistoryData) renderChart(lastHistoryData);
+    if (chartData) {
+      drawCandles(document.getElementById('priceChart'), chartData);
+      drawCompare(document.getElementById('cmpChart'), chartData);
+    }
+  } catch (e) { /* 아직 그릴 게 없으면 넘어간다 */ }
+}
+
+// ---------- 다크 모드 ----------
+// 저장된 선택이 없으면 기기 설정(운영체제 다크모드)을 따른다. 한 번이라도 직접 고르면
+// 그 선택이 이긴다 — 기기가 밤에 자동으로 어두워져도 내 선택이 뒤집히지 않게.
+const THEME_KEY = 'ewequity_theme';
+
+function applyTheme(mode) {
+  document.documentElement.setAttribute('data-theme', mode);
+  const btn = document.getElementById('themeBtn');
+  if (btn) {
+    btn.textContent = mode === 'dark' ? '☀️' : '🌙';
+    btn.title = mode === 'dark' ? '밝게 보기' : '어둡게 보기';
+  }
+  // ⚠️ 캔버스는 그릴 때 색이 박힌다. 다시 그리지 않으면 화면만 어두워지고
+  // 차트는 밝은 색으로 남는다.
+  redrawVisibleCharts();
+}
+
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+
+function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) { /* 시크릿 모드 등 */ }
+  const prefersDark = window.matchMedia &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches;
+  applyTheme(saved || (prefersDark ? 'dark' : 'light'));
+
+  // 아직 직접 고른 적이 없을 때만 기기 설정 변화를 따라간다
+  if (!saved && window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (e) {
+      let picked = null;
+      try { picked = localStorage.getItem(THEME_KEY); } catch (err) { /* noop */ }
+      if (!picked) applyTheme(e.matches ? 'dark' : 'light');
+    });
+  }
+}
+
+function toggleTheme() {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* noop */ }
+  applyTheme(next);
+}
+
+document.getElementById('themeBtn').addEventListener('click', toggleTheme);
+initTheme();
+
 document.getElementById('refreshBtn').addEventListener('click', manualRefresh);
 
 loadAll();
