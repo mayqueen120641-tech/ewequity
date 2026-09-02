@@ -1717,6 +1717,33 @@ function searchStockNews_(name) {
   return out.slice(0, 14);
 }
 
+// AI 호출이 거절당했을 때 원인을 한 곳에 기록한다. 서버 로그를 볼 수 없는 상황이
+// 반복돼서, "왜 안 되는지"를 응답으로도 확인할 수 있어야 한다.
+// ⚠️ 원문에는 결제 상태 같은 내부 사정이 담기므로 밖으로는 분류만 내보낸다.
+var AI_ERR_PROP_ = 'AI_LAST_ERR';
+function noteAiFail_(tag, res) {
+  const msg = tag + ': HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 300);
+  console.log(msg);
+  safe_(function () {
+    PropertiesService.getScriptProperties().setProperty(AI_ERR_PROP_, scrubSecrets_(msg));
+  });
+  return null;
+}
+function noteAiOk_() {
+  safe_(function () { PropertiesService.getScriptProperties().deleteProperty(AI_ERR_PROP_); });
+}
+// 마지막 AI 실패를 사용자용 문구로. 분류가 필요할 때만 쓴다.
+function aiFailKind_() {
+  const raw = String(safe_(function () {
+    return PropertiesService.getScriptProperties().getProperty(AI_ERR_PROP_);
+  }) || '');
+  if (!raw) return null;
+  if (/credit balance|billing/i.test(raw)) return 'credit';
+  if (/rate_limit|429/i.test(raw)) return 'rate';
+  if (/authentication|invalid x-api-key|401/i.test(raw)) return 'auth';
+  return 'other';
+}
+
 function callClaudeExplain_(apiKey, name, quote, news, market, flow) {
   const moved = quote && !quote.error && quote.changePct != null
     ? name + '은(는) 오늘 ' + quote.changePct.toFixed(2) + '% ' +
@@ -1780,7 +1807,8 @@ function callClaudeExplain_(apiKey, name, quote, news, market, flow) {
 
   const code = res.getResponseCode();
   const body = res.getContentText();
-  if (code >= 400) { console.log('callClaudeExplain_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+  if (code >= 400) return noteAiFail_('callClaudeExplain_', res);
+  noteAiOk_();
 
   const json = JSON.parse(body);
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') {
@@ -1942,7 +1970,8 @@ function callClaudeWeekly_(apiKey, briefs) {
 
   const code = res.getResponseCode();
   const body = res.getContentText();
-  if (code >= 400) { console.log('callClaudeWeekly_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+  if (code >= 400) return noteAiFail_('callClaudeWeekly_', res);
+  noteAiOk_();
 
   const json = JSON.parse(body);
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
@@ -2241,7 +2270,8 @@ function callClaudeAsk_(apiKey, question, context, history) {
 
   const code = res.getResponseCode();
   const body = res.getContentText();
-  if (code >= 400) { console.log('callClaudeAsk_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+  if (code >= 400) return noteAiFail_('callClaudeAsk_', res);
+  noteAiOk_();
 
   const json = JSON.parse(body);
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') {
@@ -2332,10 +2362,8 @@ function callClaudeBriefing_(apiKey, rates, news) {
 
   const code = res.getResponseCode();
   const body = res.getContentText();
-  if (code >= 400) {
-    console.log('callClaudeBriefing_: HTTP ' + code + ' - ' + body.slice(0, 400));
-    return null;
-  }
+  if (code >= 400) return noteAiFail_('callClaudeBriefing_', res);
+  noteAiOk_();
 
   const json = JSON.parse(body);
   if (json.stop_reason === 'refusal') {
@@ -2956,7 +2984,8 @@ function callClaudeFinAi_(apiKey, fin, medians) {
 
   const code = res.getResponseCode();
   const body = res.getContentText();
-  if (code >= 400) { console.log('callClaudeFinAi_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+  if (code >= 400) return noteAiFail_('callClaudeFinAi_', res);
+  noteAiOk_();
 
   const json = JSON.parse(body);
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') {
@@ -3994,7 +4023,8 @@ function callClaudeChartAi_(apiKey, d) {
   }
   const code = res.getResponseCode();
   const body = res.getContentText();
-  if (code >= 400) { console.log('callClaudeChartAi_: HTTP ' + code + ' - ' + body.slice(0, 300)); return null; }
+  if (code >= 400) return noteAiFail_('callClaudeChartAi_', res);
+  noteAiOk_();
   const json = JSON.parse(body);
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
   const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
@@ -4203,10 +4233,8 @@ function callClaudeExplainOn_(apiKey, name, date, move, news) {
       })
     });
   } catch (err) { return null; }
-  if (res.getResponseCode() >= 400) {
-    console.log('callClaudeExplainOn_: HTTP ' + res.getResponseCode());
-    return null;
-  }
+  if (res.getResponseCode() >= 400) return noteAiFail_('callClaudeExplainOn_', res);
+  noteAiOk_();
   const json = JSON.parse(res.getContentText());
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
   const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
@@ -4812,6 +4840,7 @@ function getPolicy(noCache) {
     // 왜 없는지 화면에서 알려주기 위해(그리고 로그를 읽을 수 없어서) 마지막 실패 이유를 같이 준다.
     // ⚠️ 원문 오류를 그대로 내보내면 공개 URL에 결제 상태 같은 내부 사정이 드러난다.
     // 사용자가 이해할 수 있는 문구로 바꾸고, 자세한 건 서버 로그에만 남긴다.
+    aiFail: aiFailKind_(),
     fomcError: brief ? null : friendlyPolicyError_(
       PropertiesService.getScriptProperties().getProperty('POLICY_LAST_ERR')),
     recent: (brief && brief.recent) || [],
@@ -5348,6 +5377,19 @@ function stockFactsText_(f) {
   return L.join('\n');
 }
 
+// 프롬프트로 금지해도 완곡어로 새어나온다(실측: "고평가 우려가 있는 대형주").
+// 이 카드는 매수·매도 판단으로 읽히면 안 되므로, 값 판단 단어는 서버에서도 막는다.
+var CARD_BANNED_ = ['저평가', '고평가', '싸다', '비싸다', '매력적', '좋은 종목', '나쁜 종목',
+  '우량주', '추천', '목표가', '사야', '팔아야', '기회'];
+function cardViolation_(card) {
+  const blob = [card.headline, card.summary, card.note]
+    .concat(card.strengths || [], card.cautions || []).join(' ');
+  for (var i = 0; i < CARD_BANNED_.length; i++) {
+    if (blob.indexOf(CARD_BANNED_[i]) !== -1) return CARD_BANNED_[i];
+  }
+  return null;
+}
+
 function getStockCard(symbol, noCache) {
   const raw = String(symbol || '').trim();
   if (!raw) return { error: '종목을 입력해주세요.' };
@@ -5365,8 +5407,21 @@ function getStockCard(symbol, noCache) {
   if (cached) return cached;
 
   const facts = stockFactsText_(f);
-  const r = callClaudeCard_(key, f, facts);
+  var r = callClaudeCard_(key, f, facts);
   if (!r) return { error: '요약을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+
+  // 값 판단 단어가 섞이면 한 번 더 시켜본다. 그래도 남으면 보여주지 않는다 —
+  // 카드가 안 뜨는 것보다 매수 권유처럼 읽히는 게 더 나쁘다.
+  var bad = cardViolation_(r);
+  if (bad) {
+    console.log('getStockCard: 금지어 "' + bad + '" — 재생성');
+    r = callClaudeCard_(key, f, facts +
+      '\n\n[주의] 방금 "' + bad + '"라는 표현을 썼다. 그 단어와 비슷한 값 판단 표현을 ' +
+      '완곡한 형태까지 포함해 전부 빼고 수치 서술로만 다시 써라.');
+    if (!r || cardViolation_(r)) {
+      return { error: '요약을 만들지 못했어요. 잠시 후 다시 시도해주세요.' };
+    }
+  }
 
   // 모델이 문장 끝에 "(5)", "(1.88)"처럼 숫자만 괄호로 붙이는 버릇이 있다.
   // 프롬프트로도 막았지만 새면 화면이 깨져 보이므로 여기서 한 번 더 걷어낸다.
@@ -5412,7 +5467,9 @@ function callClaudeCard_(apiKey, f, facts) {
     'note에는 이 종목의 숫자를 보고 초보자가 오해하기 쉬운 점을 짚어줘.\n\n' +
     '⚠️ 반드시 지킬 것:\n' +
     '- **매수/매도 추천, 목표가, "지금이 기회" 같은 말 금지.** 이 카드는 판단을 돕는 자료지 판단 자체가 아니다.\n' +
-    '- **"좋은 종목", "나쁜 종목", "저평가", "고평가"로 단정하지 마.** 사실과 그 의미까지만.\n' +
+    '- **다음 단어는 아예 쓰지 마: 저평가, 고평가, 싸다, 비싸다, 매력적, 좋은 종목, 나쁜 종목, 우량.**\n' +
+    '  "고평가 우려가 있는"처럼 완곡하게 돌려 쓰는 것도 안 된다. 대신 수치를 그대로 말해라 — ' +
+    '"PER 33배로, 지금 이익 대비 주가가 높은 편"처럼.\n' +
     '- **앞으로 어떻게 될지 예측하지 마.** 지나간 수치만 설명해.\n' +
     '- 주어진 수치만 쓰고 없는 숫자를 지어내지 마. 업종 평균이나 경쟁사를 아는 척하지 마.\n' +
     '- cautions를 억지로 채우지 마. 실제로 수치에서 읽히는 것만.\n' +
@@ -5435,10 +5492,8 @@ function callClaudeCard_(apiKey, f, facts) {
       })
     });
   } catch (err) { return null; }
-  if (res.getResponseCode() >= 400) {
-    console.log('callClaudeCard_: HTTP ' + res.getResponseCode() + ' ' + res.getContentText().slice(0, 200));
-    return null;
-  }
+  if (res.getResponseCode() >= 400) return noteAiFail_('callClaudeCard_', res);
+  noteAiOk_();
   const json = JSON.parse(res.getContentText());
   if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
   const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
