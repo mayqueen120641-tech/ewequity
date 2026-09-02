@@ -4553,7 +4553,8 @@ function parseFedFeed_(xml) {
     const l = it.match(/<link>([\s\S]*?)<\/link>/);
     const d = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
     return {
-      title: cdata_(t && t[1]),
+      // RSS 제목에는 &#39; 같은 엔티티가 그대로 들어온다("Board&#39;s"). 화면에 나가므로 푼다.
+      title: stripTags_(cdata_(t && t[1])),
       link: cdata_(l && l[1]),
       pubDate: cdata_(d && d[1])
     };
@@ -4808,11 +4809,17 @@ function ensurePolicyBrief_() {
   const props = PropertiesService.getScriptProperties();
   const has = props.getProperty(POLICY_BRIEF_PROP_);
   if (has) return;
+  // 실패가 크레딧 소진 같은 "밖의 사정"이었다면, 그게 풀린 순간 1시간을 더
+  // 기다릴 이유가 없다. 다른 AI 호출이 성공해 실패 기록이 지워졌으면 바로 다시 시도한다.
+  const hadErr = props.getProperty('POLICY_LAST_ERR');
+  const aiHealthy = aiFailKind_() === null;
   const last = Number(props.getProperty(POLICY_TRY_PROP_) || 0);
-  if (Date.now() - last < POLICY_RETRY_MS_) return;
+  if (!(hadErr && aiHealthy) && Date.now() - last < POLICY_RETRY_MS_) return;
+
   props.setProperty(POLICY_TRY_PROP_, String(Date.now()));
   const why = safe_(function () { return refreshPolicyBrief(); });
   if (why) props.setProperty('POLICY_LAST_ERR', why);
+  else props.deleteProperty('POLICY_LAST_ERR');   // 성공했으면 옛 사유를 남기지 않는다
 }
 
 // 내부 오류를 사용자용 문구로 바꾼다. 결제·키 같은 내부 사정은 밖으로 내지 않는다.
@@ -4843,7 +4850,11 @@ function getPolicy(noCache) {
     aiFail: aiFailKind_(),
     fomcError: brief ? null : friendlyPolicyError_(
       PropertiesService.getScriptProperties().getProperty('POLICY_LAST_ERR')),
-    recent: (brief && brief.recent) || [],
+    // 저장된 브리핑은 새 성명서가 나올 때만 갱신되므로, 이미 저장된 옛 제목의
+    // 엔티티(&#39; 등)는 읽는 시점에도 한 번 풀어준다.
+    recent: ((brief && brief.recent) || []).map(function (r) {
+      return { date: r.date, title: stripTags_(r.title), link: r.link };
+    }),
     topics: policyNews_(),
     terms: POLICY_TERMS_
   };
