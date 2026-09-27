@@ -6016,6 +6016,20 @@ function sendConfirmMail_(rec) {
 // 리포트 생성과 발송을 한 함수에 묶지 않는다. 발송이 도중에 끊겨도 리포트는 남아야
 // 다시 보낼 수 있고, 화면에서도 같은 내용을 볼 수 있다.
 
+// 편집기에서 직접 실행하는 확인용. sendDailyReport는 구독자가 없으면 메일 코드에
+// 닿기 전에 끝나서 **권한 요청 창이 뜨지 않는다.** 이 함수는 첫 줄부터 MailApp을
+// 건드리므로, 권한이 없으면 실행하자마자 승인 창이 뜬다.
+function checkMail() {
+  const quota = MailApp.getRemainingDailyQuota();
+  Logger.log('✅ 메일 권한 정상 — 오늘 ' + quota + '통 더 보낼 수 있습니다.');
+  const subs = subIndex_().filter(function (k) {
+    const s = readSub_(k); return s && s.confirmed;
+  }).length;
+  Logger.log('구독자: ' + subs + '명 (확인 완료 기준)');
+  Logger.log('웹앱 주소: ' + execUrl_());
+  return quota;
+}
+
 function refreshDailyReport() {
   const r = buildDailyReport_();
   // 스크립트 속성은 값 하나당 9KB다. 뉴스 제목이 길면 넘칠 수 있어 본문은 빼고 저장한다.
@@ -6081,7 +6095,8 @@ function getReport(noCache) {
     // 오늘 더 보낼 수 있는 양. 이 호출 자체가 메일 권한을 쓰므로, 권한 승인이
     // 아직 안 됐으면 여기서 null이 나온다 — 발송을 시도하지 않고도 알 수 있다.
     mailQuota: (function () {
-      try { return MailApp.getRemainingDailyQuota(); } catch (err) { return null; }
+      try { return MailApp.getRemainingDailyQuota(); }
+      catch (err) { console.log('getReport: 메일 권한 확인 실패 - ' + err); return null; }
     })()
   };
 }
