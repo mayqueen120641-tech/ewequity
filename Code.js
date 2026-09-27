@@ -5924,10 +5924,21 @@ var MAIL_BG_ = '#F7F2E9', MAIL_PANEL_ = '#FFFDFA', MAIL_BORDER_ = '#EBE0CF';
 var MAIL_TEXT_ = '#4A3B2E', MAIL_SUB_ = '#A08F7B', MAIL_ACCENT_ = '#C9A063';
 var MAIL_UP_ = '#D9614C', MAIL_DOWN_ = '#4A7FD0';
 
-function mailSection_(title, inner) {
+// 화면에 게시된 사이트. 메일에서 눌러 바로 들어올 수 있게 한다.
+// 해시 라우팅이라 `#/chart`처럼 페이지를 직접 지목할 수 있다.
+var SITE_URL_ = 'https://mayqueen120641-tech.github.io/ewequity/';
+
+// 섹션마다 **그 내용을 더 볼 수 있는 페이지**로 보낸다. 링크 하나만 맨 아래 두면
+// "더 보고 싶은 그 순간"에 눌러야 할 게 없다.
+function mailSection_(title, inner, page) {
+  const link = page
+    ? '<a href="' + escH_(SITE_URL_ + '#/' + page) + '" ' +
+      'style="float:right;font-size:11.5px;font-weight:600;color:' + MAIL_SUB_ +
+      ';text-decoration:none;">더 보기 &rsaquo;</a>'
+    : '';
   return '<tr><td style="padding:22px 26px 0;">' +
     '<div style="font-size:12px;font-weight:700;letter-spacing:.06em;color:' + MAIL_ACCENT_ +
-    ';margin-bottom:10px;">' + escH_(title) + '</div>' + inner + '</td></tr>';
+    ';margin-bottom:10px;">' + escH_(title) + link + '</div>' + inner + '</td></tr>';
 }
 
 function reportHtml_(r, unsubUrl) {
@@ -5956,9 +5967,9 @@ function reportHtml_(r, unsubUrl) {
       escH_(delta) + '</td></tr>';
   });
   closes += '</table>';
-  body += mailSection_('오늘 종가', closes);
+  body += mailSection_('오늘 종가', closes, 'market');
 
-  if (r.ai && r.ai.flow) body += mailSection_('주가 흐름', '<p style="' + P + '">' + escH_(r.ai.flow) + '</p>');
+  if (r.ai && r.ai.flow) body += mailSection_('주가 흐름', '<p style="' + P + '">' + escH_(r.ai.flow) + '</p>', 'chart');
 
   // 주요 뉴스
   if (r.news.length) {
@@ -5969,10 +5980,10 @@ function reportHtml_(r, unsubUrl) {
         '<a href="' + escH_(n.link) + '" style="color:' + MAIL_TEXT_ + ';text-decoration:none;">' +
         escH_(n.title) + '</a></p>';
     });
-    body += mailSection_('오늘의 주요 뉴스', nh);
+    body += mailSection_('오늘의 주요 뉴스', nh, 'news');
   }
 
-  if (r.ai && r.ai.intl) body += mailSection_('국제 경제 이슈', '<p style="' + P + '">' + escH_(r.ai.intl) + '</p>');
+  if (r.ai && r.ai.intl) body += mailSection_('국제 경제 이슈', '<p style="' + P + '">' + escH_(r.ai.intl) + '</p>', 'news');
 
   // 주목할 사건 — AI 해설 + 실제 일정
   var watch = '';
@@ -5991,7 +6002,7 @@ function reportHtml_(r, unsubUrl) {
     });
     watch += '</table>';
   }
-  if (watch) body += mailSection_('주목해야 할 사건', watch);
+  if (watch) body += mailSection_('주목해야 할 사건', watch, 'calendar');
 
   if (!r.ai) {
     body += mailSection_('안내',
@@ -6005,10 +6016,20 @@ function reportHtml_(r, unsubUrl) {
     ';border:1px solid ' + MAIL_BORDER_ + ';border-radius:14px;overflow:hidden;' +
     'font-family:-apple-system,BlinkMacSystemFont,\'Apple SD Gothic Neo\',\'Malgun Gothic\',sans-serif;">' +
     '<tr><td style="padding:22px 26px 0;border-bottom:1px solid ' + MAIL_BORDER_ + ';padding-bottom:16px;">' +
+    '<a href="' + escH_(SITE_URL_) + '" style="text-decoration:none;">' +
     '<div style="font-size:17px;font-weight:800;color:' + MAIL_TEXT_ + ';letter-spacing:-.3px;">' +
-    '<span style="color:' + MAIL_ACCENT_ + ';">Ewe</span>Quity 일일 리포트</div>' +
+    '<span style="color:' + MAIL_ACCENT_ + ';">Ewe</span>Quity 일일 리포트</div></a>' +
     '<div style="font-size:12px;color:' + MAIL_SUB_ + ';margin-top:4px;">' + escH_(r.date) + '</div>' +
     '</td></tr>' + body +
+    // 메일은 요약이고, 나머지(관심종목·재무·실적·수급)는 사이트에 있다.
+    '<tr><td align="center" style="padding:26px 26px 4px;">' +
+    '<a href="' + escH_(SITE_URL_) + '" ' +
+    'style="display:inline-block;background:' + MAIL_ACCENT_ + ';color:#fff;text-decoration:none;' +
+    'padding:13px 26px;border-radius:10px;font-size:14px;font-weight:700;">' +
+    '대시보드에서 더 보기</a>' +
+    '<div style="font-size:11.5px;color:' + MAIL_SUB_ + ';margin-top:9px;line-height:1.6;">' +
+    '관심 종목 · 차트 분석 · 재무 · 실적 발표를 볼 수 있어요</div>' +
+    '</td></tr>' +
     '<tr><td style="padding:22px 26px 24px;">' +
     '<div style="border-top:1px solid ' + MAIL_BORDER_ + ';padding-top:14px;font-size:11.5px;line-height:1.7;color:' + MAIL_SUB_ + ';">' +
     '이 리포트는 <b style="color:' + MAIL_TEXT_ + ';">매수·매도 판단이 아니며</b>, 앞으로를 예측하지 않습니다. ' +
