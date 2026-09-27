@@ -6077,7 +6077,12 @@ function getReport(noCache) {
     upcoming: r.upcoming, ai: r.ai,
     subscribers: subIndex_().filter(function (k) {
       const s = readSub_(k); return s && s.confirmed;
-    }).length
+    }).length,
+    // 오늘 더 보낼 수 있는 양. 이 호출 자체가 메일 권한을 쓰므로, 권한 승인이
+    // 아직 안 됐으면 여기서 null이 나온다 — 발송을 시도하지 않고도 알 수 있다.
+    mailQuota: (function () {
+      try { return MailApp.getRemainingDailyQuota(); } catch (err) { return null; }
+    })()
   };
 }
 
