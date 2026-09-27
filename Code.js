@@ -109,6 +109,15 @@ function doGet(e) {
           noCache
         );
         break;
+      case 'report':
+        result = getReport(noCache);
+        break;
+      // ⚠️ 아래 둘은 메일 안의 링크를 누르는 경로다. JSON이 아니라 사람이 읽을 화면을
+      //    돌려줘야 하므로 여기서 바로 반환한다(아래 ContentService 래퍼를 타지 않는다).
+      case 'confirm':
+        return mailResultPage_(confirmMail((e.parameter && e.parameter.t) || ''));
+      case 'unsub':
+        return mailResultPage_(unsubMail((e.parameter && e.parameter.t) || ''));
       default:
         result = { error: 'unknown action: ' + action };
     }
@@ -373,7 +382,11 @@ function setupTriggers() {
     { name: 'refreshDartCorpMap', fn: refreshDartCorpMap, weeks: 1 },
     { name: 'refreshDartSnapshot', fn: refreshDartSnapshot, days: 1 },
     // FOMC 성명서는 연 8회만 나온다. 하루 한 번이면 충분하고, 같은 성명서면 AI를 안 부른다.
-    { name: 'refreshPolicyBrief', fn: refreshPolicyBrief, days: 1 }
+    { name: 'refreshPolicyBrief', fn: refreshPolicyBrief, days: 1 },
+    // 리포트를 먼저 만들고(6시), 한 시간 뒤에 보낸다(7시). 생성이 늦어져도
+    // 발송이 빈 리포트를 집어가지 않게 시간을 벌어둔다.
+    { name: 'refreshDailyReport', fn: refreshDailyReport, days: 1 },
+    { name: 'sendDailyReport', fn: sendDailyReport, days: 1, atHour: 7 }
   ];
   const names = jobs.map(function (j) { return j.name; });
 
@@ -385,7 +398,7 @@ function setupTriggers() {
     // everyMinutes는 1/5/10/15/30만 받는다. 그보다 긴 주기는 everyHours를 써야 한다.
     // everyWeeks는 요일을 같이 지정하지 않으면 생성이 실패한다.
     if (j.weeks) clock.everyWeeks(j.weeks).onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(4);
-    else if (j.days) clock.everyDays(j.days).atHour(6);
+    else if (j.days) clock.everyDays(j.days).atHour(j.atHour === undefined ? 6 : j.atHour);
     else if (j.hours) clock.everyHours(j.hours);
     else clock.everyMinutes(j.minutes);
     clock.create();
@@ -3352,6 +3365,15 @@ function doPost(e) {
       case 'codenick':
         result = setCodeNickname(body.code, body.nickname);
         break;
+      // ---- 일일 메일 리포트 ----
+      // ⚠️ 주소는 POST로만 받는다. GET 쿼리에 실으면 접속 로그·리퍼러에 남는데
+      //    이메일은 개인정보다(접속 코드를 POST로만 다루는 것과 같은 이유).
+      case 'subscribe':
+        result = subscribeMail(body.email);
+        break;
+      case 'substatus':
+        result = subStatus(body.email);
+        break;
       case 'saveuserdata':
         result = saveUserData(token, JSON.stringify(body.data || {}));
         break;
@@ -5510,4 +5532,571 @@ function callClaudeCard_(apiKey, f, facts) {
   const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
   if (!tb) return null;
   try { return JSON.parse(tb.text); } catch (err) { return null; }
+}
+
+// ================= 24. 일일 메일 리포트 =================
+// ⚠️ 이 기능은 이 프로젝트에서 **처음으로 개인정보(이메일)를 받는** 기능이다.
+// 그동안은 "이메일·비밀번호를 받지 않는다"를 원칙으로 접속 코드 방식을 썼는데,
+// 메일 발송은 주소 없이는 불가능하므로 예외가 된다. 그래서 다음을 지킨다:
+//
+//   1) **더블 옵트인** — 주소를 적었다고 바로 보내지 않는다. 확인 메일의 링크를
+//      눌러야 발송이 시작된다. 이 웹앱은 누구나 호출할 수 있어서, 그렇지 않으면
+//      **남의 주소를 적어 넣어 원치 않는 메일을 보내게 만들 수 있다.** 그 메일은
+//      이 스크립트 소유자 계정 이름으로 나가므로 스팸 신고가 그대로 계정에 쌓인다.
+//   2) 모든 메일에 **수신거부 링크**를 넣는다.
+//   3) 주소는 해시를 키로 저장하고, 화면·응답에 전체 주소를 그대로 돌려주지 않는다.
+//   4) 구독자 수와 하루 신규 신청 수에 상한을 둔다.
+
+var SUB_PREFIX_ = 'SUB_';
+var SUB_INDEX_ = 'SUB_INDEX';
+// Gmail 무료 계정의 MailApp 하루 발송 한도가 100통이다. 확인 메일과 재시도 여유를
+// 남겨 80명으로 제한한다(Workspace 계정이면 1500통이라 더 올려도 된다).
+var SUB_MAX_ = 80;
+var SUB_NEW_DAILY_ = 20;          // 남의 주소를 무더기로 등록하는 걸 막는 하루 상한
+var SUB_NEW_COUNT_ = 'SUB_NEW_COUNT';
+var REPORT_PROP_ = 'DAILY_REPORT';
+
+// 주소를 그대로 속성 키에 쓰면 키 제약에도 걸리고, 속성 목록만 봐도 누가 구독 중인지
+// 드러난다. 해시를 키로 쓰고 주소는 값 안에만 둔다.
+function emailKey_(email) {
+  const raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(email).toLowerCase());
+  return SUB_PREFIX_ + raw.map(function (b) {
+    return ('0' + (b & 0xFF).toString(16)).slice(-2);
+  }).join('').slice(0, 24);
+}
+
+// 형식 검사는 "확실히 틀린 것"만 걸러낸다. 진짜 유효성은 확인 메일이 도착하는지로
+// 판가름나므로, 여기서 과하게 까다롭게 굴 필요가 없다.
+function normalizeEmail_(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (!s) return { error: '메일 주소를 입력해주세요.' };
+  if (s.length > 254) return { error: '메일 주소가 너무 깁니다.' };
+  if (!/^[^\s@,;]+@[^\s@,;.]+(\.[^\s@,;.]+)+$/.test(s)) {
+    return { error: '메일 주소 형식이 올바르지 않아요. (예: name@example.com)' };
+  }
+  return { email: s };
+}
+
+function subIndex_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(SUB_INDEX_) || '[]'); }
+  catch (err) { return []; }
+}
+function saveSubIndex_(list) {
+  PropertiesService.getScriptProperties().setProperty(SUB_INDEX_, JSON.stringify(list));
+}
+function readSub_(key) {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(key) || 'null'); }
+  catch (err) { return null; }
+}
+function writeSub_(key, obj) {
+  PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(obj));
+}
+
+// 하루 신규 신청 상한. 접속 코드 쪽과 같은 방식이다.
+function subNewAllowed_() {
+  const props = PropertiesService.getScriptProperties();
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  var st = { d: today, n: 0 };
+  try { st = JSON.parse(props.getProperty(SUB_NEW_COUNT_) || 'null') || st; } catch (err) { /* noop */ }
+  if (st.d !== today) st = { d: today, n: 0 };
+  if (st.n >= SUB_NEW_DAILY_) return false;
+  st.n += 1;
+  props.setProperty(SUB_NEW_COUNT_, JSON.stringify(st));
+  return true;
+}
+
+function subToken_() {
+  return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '').slice(0, 32);
+}
+
+// 화면에 돌려줄 때는 주소를 가린다. 남이 내 화면을 봐도 전체 주소가 드러나지 않게.
+function maskEmail_(email) {
+  const at = String(email).indexOf('@');
+  if (at <= 0) return '***';
+  const head = email.slice(0, at);
+  const shown = head.length <= 2 ? head.charAt(0) : head.slice(0, 2);
+  return shown + '***' + email.slice(at);
+}
+
+// ---------- 구독 신청 / 확인 / 해지 ----------
+
+function execUrl_() {
+  // 확인·수신거부 링크는 이 웹앱 자신을 가리켜야 한다.
+  return ScriptApp.getService().getUrl();
+}
+
+function subscribeMail(rawEmail) {
+  const chk = normalizeEmail_(rawEmail);
+  if (chk.error) return { error: chk.error };
+  const email = chk.email;
+  const key = emailKey_(email);
+  const existing = readSub_(key);
+
+  if (existing && existing.confirmed) {
+    return { ok: true, already: true, email: maskEmail_(email),
+             message: '이미 받아보고 계세요. 매일 아침에 보내드립니다.' };
+  }
+
+  const index = subIndex_();
+  if (!existing && index.length >= SUB_MAX_) {
+    return { error: '지금은 신청 인원이 가득 찼어요. 나중에 다시 시도해주세요.' };
+  }
+  if (!subNewAllowed_()) {
+    return { error: '오늘 신청이 많아 잠시 멈췄어요. 내일 다시 시도해주세요.' };
+  }
+
+  const rec = {
+    email: email,
+    confirmToken: subToken_(),
+    unsubToken: subToken_(),
+    confirmed: false,
+    at: new Date().toISOString()
+  };
+  writeSub_(key, rec);
+  if (index.indexOf(key) === -1) { index.push(key); saveSubIndex_(index); }
+
+  const sent = safe_(function () { return sendConfirmMail_(rec); });
+  if (sent && sent.error) {
+    console.log('subscribeMail: 확인 메일 실패 - ' + sent.error);
+    return { error: '확인 메일을 보내지 못했어요. 잠시 후 다시 시도해주세요.' };
+  }
+  return { ok: true, email: maskEmail_(email),
+           message: '확인 메일을 보냈어요. 메일함에서 링크를 눌러주시면 시작됩니다.' };
+}
+
+function findByToken_(token, field) {
+  if (!token || String(token).length < 16) return null;
+  const index = subIndex_();
+  for (var i = 0; i < index.length; i++) {
+    const rec = readSub_(index[i]);
+    if (rec && rec[field] === token) return { key: index[i], rec: rec };
+  }
+  return null;
+}
+
+function confirmMail(token) {
+  const hit = findByToken_(token, 'confirmToken');
+  if (!hit) return { ok: false, message: '확인 링크가 만료되었거나 올바르지 않아요.' };
+  if (!hit.rec.confirmed) {
+    hit.rec.confirmed = true;
+    hit.rec.confirmedAt = new Date().toISOString();
+    // 확인이 끝난 토큰은 더 쓸 일이 없다. 링크가 어딘가에 남아도 재사용되지 않게 지운다.
+    hit.rec.confirmToken = '';
+    writeSub_(hit.key, hit.rec);
+  }
+  return { ok: true, email: maskEmail_(hit.rec.email),
+           message: '구독이 시작됐어요. 내일 아침부터 리포트를 보내드립니다.' };
+}
+
+function unsubMail(token) {
+  const hit = findByToken_(token, 'unsubToken');
+  if (!hit) return { ok: false, message: '수신거부 링크가 올바르지 않아요.' };
+  PropertiesService.getScriptProperties().deleteProperty(hit.key);
+  saveSubIndex_(subIndex_().filter(function (k) { return k !== hit.key; }));
+  return { ok: true, message: '수신거부 처리됐어요. 더 이상 보내지 않습니다.' };
+}
+
+// 화면에서 "내가 구독 중인가"를 확인할 때. 주소를 받아 상태만 돌려준다.
+function subStatus(rawEmail) {
+  const chk = normalizeEmail_(rawEmail);
+  if (chk.error) return { error: chk.error };
+  const rec = readSub_(emailKey_(chk.email));
+  if (!rec) return { subscribed: false, pending: false };
+  return { subscribed: !!rec.confirmed, pending: !rec.confirmed, email: maskEmail_(rec.email) };
+}
+
+// ---------- 일일 리포트 만들기 ----------
+// ⚠️ 리포트는 **하루 한 번만** 만들고, 만든 걸 모든 구독자에게 그대로 보낸다.
+// 사람마다 만들면 AI 호출이 구독자 수만큼 늘어난다(80명이면 하루 80번).
+
+var REPORT_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    headline: { type: 'string', description: '오늘 시장을 한 줄로. 20자 안팎.' },
+    flow: { type: 'string', description: '주가 흐름 3~4문장. 지수가 왜 그렇게 움직였는지 뉴스와 엮어서.' },
+    intl: { type: 'string', description: '국제 경제 이슈 2~3문장. 한국 시장에 어떤 의미인지까지.' },
+    watch: {
+      type: 'array',
+      items: { type: 'string', description: '앞으로 주목할 사건 한 줄' },
+      description: '2~3개'
+    }
+  },
+  required: ['headline', 'flow', 'intl', 'watch'],
+  additionalProperties: false
+};
+
+// 지수·환율 등 오늘 종가를 한 줄씩 뽑는다.
+function reportCloses_(rates) {
+  const rows = [];
+  // ⚠️ unit은 화면 표시용, promptUnit은 AI에게 알려줄 단위다. 지수는 화면에 단위를
+  // 안 붙이지만 그대로 넘기면 모델이 "원"이라고 지어낸다(실측: "코스피 7,080원대").
+  const put = function (label, obj, unit, digits, promptUnit) {
+    if (!obj || obj.value === null || obj.value === undefined) return;
+    rows.push({
+      label: label,
+      unit: promptUnit || unit || '',
+      value: fmtNum_(obj.value, digits === undefined ? 2 : digits) + (unit || ''),
+      pct: (obj.changePct === null || obj.changePct === undefined) ? null : obj.changePct,
+      chg: (obj.change === null || obj.change === undefined) ? null : obj.change
+    });
+  };
+  put('코스피', rates.kospi, '', 2, '포인트');
+  put('나스닥', rates.nasdaq, '', 2, '포인트');
+  put('원/달러', rates.usdkrw, '원', 1);
+  put('WTI 유가', rates.wti, '달러', 2);
+  put('금', rates.gold, '달러', 1);
+  put('비트코인', rates.btc, '달러', 0);
+  const b = rates.bonds || {};
+  if (b.kr10y && b.kr10y.value != null) {
+    rows.push({ label: '국고채 10년', value: fmtNum_(b.kr10y.value, 3) + '%', pct: null, chg: null });
+  }
+  if (b.us10y && b.us10y.value != null) {
+    rows.push({ label: '미국채 10년', value: fmtNum_(b.us10y.value, 2) + '%', pct: null, chg: null });
+  }
+  return rows;
+}
+
+function fmtNum_(n, digits) {
+  const v = Number(n);
+  if (!isFinite(v)) return '-';
+  return v.toLocaleString('ko-KR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+// 앞으로 7일 안의 일정만. 지난 일정은 리포트에 의미가 없다.
+function reportUpcoming_(cal) {
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const until = Utilities.formatDate(
+    new Date(Date.now() + 7 * 86400000), 'Asia/Seoul', 'yyyy-MM-dd');
+  const out = [];
+  (cal.macro || []).forEach(function (m) {
+    if (m.date >= today && m.date <= until) out.push({ date: m.date, kind: '지표', name: m.name });
+  });
+  (cal.earnings || []).forEach(function (e) {
+    if (e.date >= today && e.date <= until) {
+      out.push({ date: e.date, kind: '실적', name: e.symbol + (e.hour === 'amc' ? ' (장 마감 후)' : e.hour === 'bmo' ? ' (장 시작 전)' : '') });
+    }
+  });
+  out.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  return out.slice(0, 8);
+}
+
+function buildDailyReport_() {
+  const rates = safe_(function () { return getRates(); }) || {};
+  const newsAll = safe_(function () { return getNews('all'); }) || {};
+  const newsWorld = safe_(function () { return getNews('world'); }) || {};
+  const cal = safe_(function () { return getCalendar(); }) || {};
+  const brief = safe_(function () { return getBriefing(); }) || {};
+
+  const top5 = (newsAll.items || []).slice(0, 5).map(function (n) {
+    return { title: stripTags_(n.title), link: n.link };
+  });
+  const world5 = (newsWorld.items || []).slice(0, 5).map(function (n) {
+    return { title: stripTags_(n.title), link: n.link };
+  });
+  const closes = reportCloses_(rates);
+  const upcoming = reportUpcoming_(cal);
+
+  const ai = safe_(function () { return callClaudeReport_(closes, top5, world5, upcoming, brief); });
+
+  return {
+    date: Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd'),
+    builtAt: new Date().toISOString(),
+    closes: closes,
+    news: top5,
+    world: world5,
+    upcoming: upcoming,
+    ai: (ai && !ai.error) ? ai : null
+  };
+}
+
+function callClaudeReport_(closes, news, world, upcoming, brief) {
+  const key = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+  if (!key) return null;
+
+  const lines = [];
+  lines.push('[오늘 종가]');
+  closes.forEach(function (c) {
+    lines.push('- ' + c.label + ' ' + c.value +
+      (c.unit && c.value.indexOf(c.unit) === -1 ? ' ' + c.unit : '') +
+      (c.pct === null ? '' : ' (' + (c.pct >= 0 ? '+' : '') + c.pct.toFixed(2) + '%)'));
+  });
+  lines.push('', '[국내 주요 뉴스]');
+  news.forEach(function (n, i) { lines.push((i + 1) + '. ' + n.title); });
+  lines.push('', '[해외 경제 뉴스]');
+  world.forEach(function (n, i) { lines.push((i + 1) + '. ' + n.title); });
+  if (upcoming.length) {
+    lines.push('', '[앞으로 7일 일정]');
+    upcoming.forEach(function (u) { lines.push('- ' + u.date + ' ' + u.kind + ': ' + u.name); });
+  }
+  if (brief.summary) lines.push('', '[오늘의 브리핑]', brief.summary);
+
+  const prompt = lines.join('\n') + '\n\n' +
+    '위 자료로 매일 아침 보내는 경제 리포트의 해설 부분을 써줘. 읽는 사람은 투자 초보자다.\n\n' +
+    '⚠️ 반드시 지킬 것:\n' +
+    '- **매수/매도 추천, 목표가, "지금이 기회" 같은 말 금지.** 이 리포트는 판단을 돕는 자료지 판단 자체가 아니다.\n' +
+    '- **앞으로 어떻게 될지 예측하지 마.** "오를 것", "반등 예상" 전부 금지. 지나간 일과 예정된 일정만.\n' +
+    '- **"저평가", "고평가", "싸다", "비싸다", "매력적"이라는 단어를 쓰지 마.** 완곡하게 돌려 쓰는 것도 안 된다.\n' +
+    '- 주어진 자료에 없는 숫자를 지어내지 마.\n' +
+    '- **단위를 지어내지 마.** 자료에 적힌 단위를 그대로 써라. 코스피·나스닥은 지수라 "포인트"이고 "원"이 아니다.\n' +
+    '- 어려운 말은 괄호로 짧게 풀어줘(예: 국채금리(나라가 빌리는 돈의 이자)).\n' +
+    '- watch에는 이미 정해진 일정이나 이미 벌어진 일의 후속만 써라. 전망을 쓰지 마.';
+
+  var res;
+  try {
+    res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+      method: 'post',
+      contentType: 'application/json',
+      muteHttpExceptions: true,
+      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      payload: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 1400,
+        output_config: { format: { type: 'json_schema', schema: REPORT_SCHEMA_ } },
+        messages: [{ role: 'user', content: prompt }]
+      })
+    });
+  } catch (err) { return null; }
+  if (res.getResponseCode() >= 400) return noteAiFail_('callClaudeReport_', res);
+  noteAiOk_();
+  const json = JSON.parse(res.getContentText());
+  if (json.stop_reason === 'refusal' || json.stop_reason === 'max_tokens') return null;
+  const tb = (json.content || []).filter(function (b) { return b.type === 'text'; })[0];
+  if (!tb) return null;
+  var out;
+  try { out = JSON.parse(tb.text); } catch (err) { return null; }
+
+  // 카드 요약과 같은 이유로, 값 판단 표현은 서버에서도 막는다.
+  const blob = [out.headline, out.flow, out.intl].concat(out.watch || []).join(' ');
+  for (var i = 0; i < CARD_BANNED_.length; i++) {
+    if (blob.indexOf(CARD_BANNED_[i]) !== -1) {
+      console.log('callClaudeReport_: 금지어 "' + CARD_BANNED_[i] + '" — 해설 없이 보냄');
+      return null;
+    }
+  }
+  return out;
+}
+
+// ---------- 메일 HTML ----------
+// 메일 클라이언트는 <style> 블록과 대부분의 CSS를 무시한다. 표 레이아웃 + 인라인
+// 스타일로만 쓴다. 다크 모드도 클라이언트마다 제각각이라 밝은 배경 하나로 고정한다.
+
+function escH_(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+var MAIL_BG_ = '#F7F2E9', MAIL_PANEL_ = '#FFFDFA', MAIL_BORDER_ = '#EBE0CF';
+var MAIL_TEXT_ = '#4A3B2E', MAIL_SUB_ = '#A08F7B', MAIL_ACCENT_ = '#C9A063';
+var MAIL_UP_ = '#D9614C', MAIL_DOWN_ = '#4A7FD0';
+
+function mailSection_(title, inner) {
+  return '<tr><td style="padding:22px 26px 0;">' +
+    '<div style="font-size:12px;font-weight:700;letter-spacing:.06em;color:' + MAIL_ACCENT_ +
+    ';margin-bottom:10px;">' + escH_(title) + '</div>' + inner + '</td></tr>';
+}
+
+function reportHtml_(r, unsubUrl) {
+  const P = 'margin:0 0 10px;font-size:14px;line-height:1.75;color:' + MAIL_TEXT_ + ';';
+  var body = '';
+
+  if (r.ai && r.ai.headline) {
+    body += '<tr><td style="padding:24px 26px 0;">' +
+      '<div style="font-size:19px;font-weight:800;line-height:1.5;color:' + MAIL_TEXT_ + ';">' +
+      escH_(r.ai.headline) + '</div></td></tr>';
+  }
+
+  // 오늘 종가
+  var closes = '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">';
+  r.closes.forEach(function (c) {
+    const up = c.pct !== null ? c.pct >= 0 : (c.chg !== null ? c.chg >= 0 : null);
+    const col = up === null ? MAIL_SUB_ : (up ? MAIL_UP_ : MAIL_DOWN_);
+    const delta = c.pct !== null
+      ? (c.pct >= 0 ? '+' : '') + c.pct.toFixed(2) + '%'
+      : (c.chg !== null ? (c.chg >= 0 ? '+' : '') + fmtNum_(c.chg, 1) : '');
+    closes += '<tr>' +
+      '<td style="padding:6px 0;font-size:13px;color:' + MAIL_SUB_ + ';">' + escH_(c.label) + '</td>' +
+      '<td align="right" style="padding:6px 0;font-size:14px;font-weight:700;color:' + MAIL_TEXT_ + ';">' +
+      escH_(c.value) + '</td>' +
+      '<td align="right" style="padding:6px 0 6px 12px;font-size:12.5px;font-weight:700;color:' + col + ';white-space:nowrap;">' +
+      escH_(delta) + '</td></tr>';
+  });
+  closes += '</table>';
+  body += mailSection_('오늘 종가', closes);
+
+  if (r.ai && r.ai.flow) body += mailSection_('주가 흐름', '<p style="' + P + '">' + escH_(r.ai.flow) + '</p>');
+
+  // 주요 뉴스
+  if (r.news.length) {
+    var nh = '';
+    r.news.forEach(function (n, i) {
+      nh += '<p style="margin:0 0 9px;font-size:13.5px;line-height:1.6;">' +
+        '<span style="color:' + MAIL_ACCENT_ + ';font-weight:700;">' + (i + 1) + '.</span> ' +
+        '<a href="' + escH_(n.link) + '" style="color:' + MAIL_TEXT_ + ';text-decoration:none;">' +
+        escH_(n.title) + '</a></p>';
+    });
+    body += mailSection_('오늘의 주요 뉴스', nh);
+  }
+
+  if (r.ai && r.ai.intl) body += mailSection_('국제 경제 이슈', '<p style="' + P + '">' + escH_(r.ai.intl) + '</p>');
+
+  // 주목할 사건 — AI 해설 + 실제 일정
+  var watch = '';
+  if (r.ai && (r.ai.watch || []).length) {
+    r.ai.watch.forEach(function (w) {
+      watch += '<p style="margin:0 0 8px;font-size:13.5px;line-height:1.65;color:' + MAIL_TEXT_ + ';">· ' + escH_(w) + '</p>';
+    });
+  }
+  if (r.upcoming.length) {
+    watch += '<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:10px;">';
+    r.upcoming.forEach(function (u) {
+      watch += '<tr>' +
+        '<td width="86" style="padding:5px 0;font-size:12.5px;color:' + MAIL_SUB_ + ';white-space:nowrap;">' +
+        escH_(u.date.slice(5)) + ' ' + escH_(u.kind) + '</td>' +
+        '<td style="padding:5px 0;font-size:13px;color:' + MAIL_TEXT_ + ';">' + escH_(u.name) + '</td></tr>';
+    });
+    watch += '</table>';
+  }
+  if (watch) body += mailSection_('주목해야 할 사건', watch);
+
+  if (!r.ai) {
+    body += mailSection_('안내',
+      '<p style="' + P + 'color:' + MAIL_SUB_ + ';">오늘은 해설을 만들지 못해 수치와 뉴스만 보내드립니다.</p>');
+  }
+
+  return '<!doctype html><html><body style="margin:0;padding:0;background:' + MAIL_BG_ + ';">' +
+    '<table width="100%" cellpadding="0" cellspacing="0" style="background:' + MAIL_BG_ + ';padding:24px 12px;">' +
+    '<tr><td align="center">' +
+    '<table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;background:' + MAIL_PANEL_ +
+    ';border:1px solid ' + MAIL_BORDER_ + ';border-radius:14px;overflow:hidden;' +
+    'font-family:-apple-system,BlinkMacSystemFont,\'Apple SD Gothic Neo\',\'Malgun Gothic\',sans-serif;">' +
+    '<tr><td style="padding:22px 26px 0;border-bottom:1px solid ' + MAIL_BORDER_ + ';padding-bottom:16px;">' +
+    '<div style="font-size:17px;font-weight:800;color:' + MAIL_TEXT_ + ';letter-spacing:-.3px;">' +
+    '<span style="color:' + MAIL_ACCENT_ + ';">Ewe</span>Quity 일일 리포트</div>' +
+    '<div style="font-size:12px;color:' + MAIL_SUB_ + ';margin-top:4px;">' + escH_(r.date) + '</div>' +
+    '</td></tr>' + body +
+    '<tr><td style="padding:22px 26px 24px;">' +
+    '<div style="border-top:1px solid ' + MAIL_BORDER_ + ';padding-top:14px;font-size:11.5px;line-height:1.7;color:' + MAIL_SUB_ + ';">' +
+    '이 리포트는 <b style="color:' + MAIL_TEXT_ + ';">매수·매도 판단이 아니며</b>, 앞으로를 예측하지 않습니다. ' +
+    '투자 판단과 책임은 본인에게 있습니다.<br>' +
+    '<a href="' + escH_(unsubUrl) + '" style="color:' + MAIL_SUB_ + ';">수신거부</a>' +
+    '</div></td></tr>' +
+    '</table></td></tr></table></body></html>';
+}
+
+function sendConfirmMail_(rec) {
+  const url = execUrl_() + '?action=confirm&t=' + encodeURIComponent(rec.confirmToken);
+  const html = '<!doctype html><html><body style="margin:0;background:' + MAIL_BG_ + ';">' +
+    '<table width="100%" cellpadding="0" cellspacing="0" style="background:' + MAIL_BG_ + ';padding:28px 12px;">' +
+    '<tr><td align="center"><table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;background:' +
+    MAIL_PANEL_ + ';border:1px solid ' + MAIL_BORDER_ + ';border-radius:14px;' +
+    'font-family:-apple-system,BlinkMacSystemFont,\'Apple SD Gothic Neo\',sans-serif;">' +
+    '<tr><td style="padding:28px 28px 8px;font-size:17px;font-weight:800;color:' + MAIL_TEXT_ + ';">' +
+    '<span style="color:' + MAIL_ACCENT_ + ';">Ewe</span>Quity 구독 확인</td></tr>' +
+    '<tr><td style="padding:0 28px;font-size:14px;line-height:1.75;color:' + MAIL_TEXT_ + ';">' +
+    '아래 버튼을 누르면 매일 아침 일일 리포트를 보내드립니다.</td></tr>' +
+    '<tr><td style="padding:20px 28px;"><a href="' + escH_(url) + '" ' +
+    'style="display:inline-block;background:' + MAIL_ACCENT_ + ';color:#fff;text-decoration:none;' +
+    'padding:12px 22px;border-radius:9px;font-size:14px;font-weight:700;">구독 시작하기</a></td></tr>' +
+    '<tr><td style="padding:0 28px 26px;font-size:12px;line-height:1.7;color:' + MAIL_SUB_ + ';">' +
+    '이 메일을 신청한 적이 없다면 <b style="color:' + MAIL_TEXT_ + ';">그냥 무시하세요.</b> ' +
+    '버튼을 누르지 않으면 아무것도 발송되지 않습니다.</td></tr>' +
+    '</table></td></tr></table></body></html>';
+
+  MailApp.sendEmail({
+    to: rec.email,
+    subject: '[EweQuity] 구독 확인 — 링크를 눌러주세요',
+    htmlBody: html,
+    name: 'EweQuity'
+  });
+  return { ok: true };
+}
+
+// ---------- 발송 (하루 1회 트리거) ----------
+// 리포트 생성과 발송을 한 함수에 묶지 않는다. 발송이 도중에 끊겨도 리포트는 남아야
+// 다시 보낼 수 있고, 화면에서도 같은 내용을 볼 수 있다.
+
+function refreshDailyReport() {
+  const r = buildDailyReport_();
+  // 스크립트 속성은 값 하나당 9KB다. 뉴스 제목이 길면 넘칠 수 있어 본문은 빼고 저장한다.
+  PropertiesService.getScriptProperties().setProperty(REPORT_PROP_, JSON.stringify(r));
+  Logger.log('✅ 일일 리포트 생성: ' + r.date + (r.ai ? ' (해설 포함)' : ' (해설 없음)'));
+  return r;
+}
+
+function readDailyReport_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(REPORT_PROP_) || 'null'); }
+  catch (err) { return null; }
+}
+
+function sendDailyReport() {
+  var r = readDailyReport_();
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  if (!r || r.date !== today) r = refreshDailyReport();
+
+  const index = subIndex_();
+  const targets = [];
+  index.forEach(function (k) {
+    const rec = readSub_(k);
+    if (rec && rec.confirmed && rec.email) targets.push(rec);
+  });
+  if (!targets.length) { Logger.log('sendDailyReport: 구독자 없음'); return; }
+
+  // ⚠️ 무료 Gmail은 하루 100통이다. 한도를 넘기면 그날 나머지가 통째로 실패하므로
+  // 보내기 전에 남은 양을 확인하고, 모자라면 아예 시작하지 않는다.
+  const quota = MailApp.getRemainingDailyQuota();
+  if (quota < targets.length) {
+    Logger.log('sendDailyReport: 발송 한도 부족 (남은 ' + quota + ' / 필요 ' + targets.length + ')');
+    return;
+  }
+
+  const subject = '[EweQuity] ' + r.date + ' 일일 리포트' +
+    (r.ai && r.ai.headline ? ' — ' + r.ai.headline : '');
+  var sent = 0, failed = 0;
+  targets.forEach(function (rec) {
+    const unsub = execUrl_() + '?action=unsub&t=' + encodeURIComponent(rec.unsubToken);
+    try {
+      MailApp.sendEmail({ to: rec.email, subject: subject,
+                          htmlBody: reportHtml_(r, unsub), name: 'EweQuity' });
+      sent++;
+    } catch (err) {
+      failed++;
+      console.log('sendDailyReport: 발송 실패 - ' + err);
+    }
+  });
+  Logger.log('✅ 일일 리포트 발송: 성공 ' + sent + ' / 실패 ' + failed);
+}
+
+// 화면에서 "메일로 가는 것과 같은 내용"을 미리 보여준다. 없으면 그 자리에서 만든다.
+function getReport(noCache) {
+  var r = readDailyReport_();
+  const today = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  if (noCache || !r || r.date !== today) r = refreshDailyReport();
+  return {
+    date: r.date, builtAt: r.builtAt, closes: r.closes, news: r.news,
+    upcoming: r.upcoming, ai: r.ai,
+    subscribers: subIndex_().filter(function (k) {
+      const s = readSub_(k); return s && s.confirmed;
+    }).length
+  };
+}
+
+// 확인·수신거부는 메일 링크를 누르는 것이라 JSON이 아니라 사람이 읽을 화면을 돌려줘야 한다.
+function mailResultPage_(res) {
+  const ok = !!res.ok;
+  return HtmlService.createHtmlOutput(
+    '<!doctype html><html><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>EweQuity</title></head>' +
+    '<body style="margin:0;background:' + MAIL_BG_ + ';font-family:-apple-system,BlinkMacSystemFont,' +
+    "'Apple SD Gothic Neo','Malgun Gothic',sans-serif;display:flex;align-items:center;" +
+    'justify-content:center;min-height:100vh;padding:20px;">' +
+    '<div style="background:' + MAIL_PANEL_ + ';border:1px solid ' + MAIL_BORDER_ +
+    ';border-radius:16px;padding:34px 30px;max-width:420px;text-align:center;">' +
+    '<div style="font-size:19px;font-weight:800;color:' + MAIL_TEXT_ + ';margin-bottom:12px;">' +
+    '<span style="color:' + MAIL_ACCENT_ + ';">Ewe</span>Quity</div>' +
+    '<div style="font-size:15px;line-height:1.7;color:' + (ok ? MAIL_TEXT_ : MAIL_SUB_) + ';">' +
+    escH_(res.message) + '</div>' +
+    '</div></body></html>'
+  ).setTitle('EweQuity');
 }
