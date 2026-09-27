@@ -724,39 +724,27 @@ function getQuotes(symbolsCsv, noCache) {
 // 표의 각 행은 td 13칸으로 고정돼 있다:
 //   [0]순위 [1]종목명 [2]현재가 [3]전일비 [4]등락률 [5]액면가 [6]시가총액(억) [7]상장주식수(천주) ...
 // ⚠️ 이 페이지는 EUC-KR이다. getContentText()를 그냥 부르면 한글이 깨진다.
-var NAVER_SISE_URL_ = 'https://finance.naver.com/sise/sise_market_sum.naver';
-var MARKET_PAGES_ = 2; // 페이지당 50종목 → 상위 100종목
+// 🔴 2026-09 네이버 금융이 stock.naver.com으로 개편되면서 옛 HTML 표(sise_market_sum)가
+// **302로 사라졌다.** 다행히 새 사이트가 쓰는 JSON API가 그대로 열려 있고, EUC-KR HTML을
+// 파싱하던 것보다 훨씬 안전하다(원시값 *Raw 필드가 따로 온다 — 쉼표 제거가 필요 없다).
+// ⚠️ 여전히 비공식 API라 언제든 또 바뀔 수 있다. 실패하면 빈 목록으로 조용히 넘어간다.
+var NAVER_RANK_URL_ = 'https://m.stock.naver.com/api/stocks/marketValue/KOSPI';
+var MARKET_PAGE_SIZE_ = 100;   // 한 번에 상위 100종목
 
 function getMarket(noCache) {
   const cached = noCache ? null : cacheGet_('market');
   if (cached) return cached;
 
-  const jobs = [];
-  for (var p = 1; p <= MARKET_PAGES_; p++) {
-    jobs.push({
-      name: 'p' + p,
-      url: NAVER_SISE_URL_ + '?sosok=0&page=' + p, // sosok=0 코스피, 1 코스닥
-      headers: { 'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'] }
-    });
+  var items = [];
+  try {
+    const res = UrlFetchApp.fetch(
+      NAVER_RANK_URL_ + '?page=1&pageSize=' + MARKET_PAGE_SIZE_,
+      { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true });
+    if (res.getResponseCode() >= 400) throw new Error('HTTP ' + res.getResponseCode());
+    items = parseNaverRank_(JSON.parse(res.getContentText()));
+  } catch (err) {
+    console.log('getMarket: 실패 - ' + err);
   }
-
-  const responses = fetchJobsSafe_(jobs);
-  const items = [];
-  const seen = {};
-  responses.forEach(function (res, i) {
-    try {
-      if (!res) throw new Error('연결 오류');
-      const code = res.getResponseCode();
-      if (code >= 400) throw new Error('HTTP ' + code);
-      parseNaverSise_(res.getContentText('EUC-KR')).forEach(function (it) {
-        if (seen[it.code]) return; // 페이지 경계에서 겹치는 경우 대비
-        seen[it.code] = true;
-        items.push(it);
-      });
-    } catch (err) {
-      console.log('getMarket: ' + jobs[i].name + ' 실패(건너뜀) - ' + err);
-    }
-  });
 
   const data = items.length
     ? { items: items, at: new Date().toISOString() }
@@ -765,7 +753,30 @@ function getMarket(noCache) {
   return data;
 }
 
-function parseNaverSise_(html) {
+function parseNaverRank_(json) {
+  const num = function (v) {
+    const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, ''));
+    return isNaN(n) ? null : n;
+  };
+  return (json.stocks || []).map(function (s) {
+    // 등락률 부호는 값에 안 붙어 온다 — compareToPreviousPrice.code가 방향이다
+    // (2=상승, 5=하락). 이걸 놓치면 하락 종목이 전부 상승으로 보인다.
+    const down = s.compareToPreviousPrice && String(s.compareToPreviousPrice.code) === '5';
+    var pct = num(s.fluctuationsRatio);
+    if (pct !== null && down && pct > 0) pct = -pct;
+    return {
+      code: s.itemCode,
+      name: s.stockName,
+      price: num(s.closePriceRaw != null ? s.closePriceRaw : s.closePrice),
+      changePct: pct,
+      // 화면은 "억원" 단위를 기대한다. marketValue가 이미 억 단위 문자열이다.
+      marketCap: num(s.marketValue)
+    };
+  }).filter(function (it) { return it.code && it.name && it.changePct !== null; });
+}
+
+function parseNaverSiseLegacy_(html) {
+
   const out = [];
   const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
   let tr;
@@ -4326,10 +4337,14 @@ function yieldSpread_(short, long) {
   return Math.round((long.value - short.value) * 100) / 100;
 }
 
-// ---- 국고채 3년: 네이버 금융 ----
-// ECOS(일별)가 GAS에서 국고채만 응답하지 않아 대체 경로를 둔다. 네이버 시가총액 페이지를
-// 이미 안정적으로 긁고 있어 같은 방식이 통한다.
-// ⚠️ 네이버에는 **국고채 3년만** 있다(10년물 없음). 페이지의 "10년"은 차트 기간 버튼이다.
+// ---- 국고채 3년: 네이버 금융 (💀 2026-09 현재 죽은 경로) ----
+// ECOS(일별)가 GAS에서 국고채만 응답하지 않을 때를 대비한 **예비** 경로였다.
+// 🔴 2026-09 네이버 금융 개편으로 이 주소는 **410 Gone**이 됐다. 새 사이트의
+//    front-api/marketIndex/prices로 옮겨봤지만 `IRR_GOVT03Y` 코드로는 빈 결과만 온다
+//    (유효 category는 major/exchange/bond/domesticInterest/… , pageSize>=10).
+// 지금은 **ECOS가 정상 동작해 이 폴백이 쓰이지 않는다.** 그래서 고치지 않고 두되,
+// ECOS가 막히면 국고채 3년이 비게 되므로 그때 대체 소스를 새로 찾아야 한다.
+// ⚠️ 네이버에는 **국고채 3년만** 있었다(10년물 없음). 페이지의 "10년"은 차트 기간 버튼.
 var NAVER_BOND3Y_URL_ =
   'https://finance.naver.com/marketindex/interestDailyQuote.naver?marketindexCd=IRR_GOVT03Y';
 
@@ -5174,6 +5189,8 @@ function setCodeNickname(rawCode, nickname) {
 // ⚠️ 네이버 금융 검색은 쿼리를 **EUC-KR로 인코딩**해야 한다. UTF-8로 보내면 404가 온다.
 //    GAS의 encodeURIComponent는 UTF-8이므로 직접 바꿔줘야 한다.
 
+// 💀 2026-09 개편으로 404. 아래 parseNaverSearch_/euckrEncode_와 함께 쓰이지 않는다.
+//    새 경로는 NAVER_AC_URL_(자동완성 JSON). 되살릴 일이 없으면 다음 정리 때 지울 것.
 var NAVER_SEARCH_URL_ = 'https://finance.naver.com/search/search.naver?query=';
 var SEARCH_CACHE_SEC_ = 3600;
 var SEARCH_MAX_ = 12;
@@ -5235,6 +5252,28 @@ function parseNaverSearch_(html) {
   return out;
 }
 
+var NAVER_AC_URL_ = 'https://m.stock.naver.com/front-api/search/autoComplete';
+
+// 자동완성은 국내 주식 말고 해외·지수·ETF도 섞어 준다. 국내 상장 종목만 남긴다
+// (typeCode가 KOSPI/KOSDAQ이고 코드가 6자리 숫자인 것).
+function parseNaverAutoComplete_(json) {
+  const r = (json && json.result) || {};
+  return (r.items || []).map(function (it) {
+    const mk = String(it.typeCode || '').toUpperCase();
+    if (!/^\d{6}$/.test(String(it.code || '')) || (mk !== 'KOSPI' && mk !== 'KOSDAQ')) return null;
+    return {
+      code: it.code,
+      symbol: it.code + (mk === 'KOSDAQ' ? '.KQ' : '.KS'),
+      name: it.name,
+      market: mk,
+      // 자동완성에는 시세가 없다. 화면이 값을 기대하므로 null로 두고,
+      // 필요하면 고른 뒤 getQuote가 채운다.
+      price: null,
+      changePct: null
+    };
+  }).filter(Boolean);
+}
+
 function searchStocks(query, noCache) {
   const q = String(query || '').trim();
   if (!q) return { items: [], query: q };
@@ -5244,32 +5283,16 @@ function searchStocks(query, noCache) {
   const cached = noCache ? null : cacheGet_(cacheKey);
   if (cached) return cached;
 
+  // 🔴 2026-09 개편으로 옛 검색 페이지(searchList.naver)가 **404**가 됐다.
+  // 새 자동완성 API는 JSON이라 EUC-KR 인코딩도, "정확히 한 종목이면 표 대신
+  // <SCRIPT> 리다이렉트를 준다"던 함정도 통째로 사라졌다.
   var items = [];
   try {
-    const res = UrlFetchApp.fetch(NAVER_SEARCH_URL_ + euckrEncode_(q), {
-      headers: { 'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'], 'Referer': 'https://finance.naver.com/' },
-      muteHttpExceptions: true
-    });
+    const res = UrlFetchApp.fetch(
+      NAVER_AC_URL_ + '?query=' + encodeURIComponent(q) + '&target=stock',
+      { headers: BROWSER_LIKE_HEADERS_, muteHttpExceptions: true });
     if (res.getResponseCode() < 400) {
-      const html = res.getContentText('EUC-KR');
-      items = parseNaverSearch_(html);
-      if (!items.length) {
-        // 단일 일치 → 코드만 얻었으므로 시세로 이름·시장을 채운다.
-        const code = parseNaverSearchRedirect_(html);
-        if (code) {
-          const one = safe_(function () { return getQuote(code + '.KS', false); });
-          const kq = (!one || one.error) ? safe_(function () { return getQuote(code + '.KQ', false); }) : null;
-          const hit = (one && !one.error) ? one : kq;
-          items = [{
-            code: code,
-            symbol: (hit && hit.symbol) || (code + '.KS'),
-            name: (hit && hit.name) || q,
-            market: (hit && /\.KQ$/i.test(hit.symbol)) ? 'KOSDAQ' : 'KOSPI',
-            price: (hit && hit.quote && hit.quote.value) || null,
-            changePct: (hit && hit.quote && hit.quote.changePct) || null
-          }];
-        }
-      }
+      items = parseNaverAutoComplete_(JSON.parse(res.getContentText()));
     }
   } catch (err) {
     console.log('searchStocks: ' + err);
