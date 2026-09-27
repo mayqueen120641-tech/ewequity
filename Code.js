@@ -1210,6 +1210,8 @@ function majorReleaseLabel_(releaseName) {
 // KIND는 JSON API가 아니라 HTML 표를 그리는 화면이라 POST로 조회해서 표를 파싱한다.
 // 브라우저가 하는 요청을 그대로 흉내내야 하므로 Referer와 form 파라미터가 필요하다.
 // (method/forward 값은 화면 JS가 폼에 채워 넣는 값 그대로다.)
+// ⚠️ CLAUDE.md에 "GAS에서 접근 가능(ECOS와 달리 막히지 않는다)"고 적어뒀지만
+//    2026-09 기준 **더 이상 사실이 아니다** — 403으로 막혔다. 아래 주석 참고.
 var KIND_IR_URL_ = 'https://kind.krx.co.kr/corpgeneral/irschedule.do';
 var KIND_MARKET_KOSPI_ = '1'; // 1=유가증권시장(코스피), 2=코스닥
 
@@ -1225,9 +1227,18 @@ function kindEarningsJob_(from, to) {
     options: {
       method: 'post',
       contentType: 'application/x-www-form-urlencoded; charset=UTF-8',
+      // 🔴 2026-09 현재 GAS에서 **HTTP 403**이다(국내 실적 일정이 0건).
+      // 브라우저 헤더를 전부 맞춰봤지만 그대로 403 — 개인 PC에서는 헤더 없이도
+      // 257행이 온다. 즉 **헤더가 아니라 구글 IP 차단**이다(ECOS와 같은 상황).
+      // 헤더는 되돌리지 않고 남겨둔다(해가 없고, 차단이 풀리면 바로 동작).
+      // 영향: 국내 실적 일정만 빠진다. 해외 실적(Finnhub)·매크로(FRED)는 정상.
       headers: {
         'User-Agent': BROWSER_LIKE_HEADERS_['User-Agent'],
-        'Referer': KIND_IR_URL_ + '?method=searchIRScheduleMain&gubun=iRSchedule'
+        'Referer': KIND_IR_URL_ + '?method=searchIRScheduleMain&gubun=iRSchedule',
+        'Origin': 'https://kind.krx.co.kr',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8'
       },
       payload: {
         method: 'searchIRScheduleSub',
